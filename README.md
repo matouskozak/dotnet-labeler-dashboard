@@ -34,9 +34,21 @@ proves nothing. Unmatched applied results remain unconfirmed.
 Human removal follow-up uses the first confirmed area application per item.
 The 7/30-day denominator requires both elapsed time and a fully fetched timeline
 through that deadline. Insufficient mature evidence is not zero. A human addition
-without removal is not a correction. Only an unambiguous single removal/addition
-by the same actor at the same timestamp is paired as a replacement. Human actors
-are not assumed to be maintainers.
+without removal is not a correction. Human actors are not assumed to be maintainers.
+
+The **Label changes** table shows factual before/after label sets, who changed
+them, and when. It replays the ordered timeline independently of prediction logs,
+so missing run evidence does not hide a known earlier label. It includes human
+edits and bot reapplications. Empty label sets appear as **No area label**, and
+the fallback remains explicit as `needs-area-label`.
+
+For presentation only, two consecutive relevant edits by the same identified
+human within five seconds are shown together when one adds a new label and the
+other removes a previously present label (in either order). Different actors,
+longer gaps, and additions without removals stay separate. All labels still
+present are shown, so adding another area label is not called a replacement.
+The displayed time is the last edit in the pair. Raw timeline events are retained
+unchanged. This grouping never supplies model confirmation or accuracy evidence.
 
 Fixed 1h/24h intake denominators retain dashboard cohort items old enough for the
 window, including no-run, failed, fallback, and unknown opportunities. Skip-only

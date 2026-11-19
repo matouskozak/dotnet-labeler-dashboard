@@ -92,84 +92,55 @@ def removal_followup(item, application, events, now, days):
     )
 
 
-def human_changes(item_key, events, confirmed, primary):
+def label_changes(item_key, events):
     rows = []
-    active_fallback = False
-    fallback_application = None
-    active_areas = set()
+    labels = set()
     human_removed = set()
-    groups = defaultdict(list)
-    for event in events:
-        groups[(event["at"], event["actor"])].append(event)
-    for event in events:
-        human = event["actor_type"] == "User"
-        label = event["label"]
-        added = event["event"] == "labeled"
-        category = None
-        replacement = None
-        group = groups[(event["at"], event["actor"])]
-        additions = [e for e in group if e["event"] == "labeled" and e["label"].startswith("area-")]
-        removals = [
-            e for e in group if e["event"] == "unlabeled" and e["label"].startswith("area-")
-        ]
-        fallback_removals = [
-            e for e in group if e["event"] == "unlabeled" and e["label"] == "needs-area-label"
-        ]
-        if human and label.startswith("area-"):
-            category = "human_area_added" if added else "human_area_removed"
-            if len(additions) == len(removals) == 1:
-                replacement = f"{removals[0]['label']} -> {additions[0]['label']}"
-            if (
-                added
-                and not active_areas
-                and (active_fallback or (len(fallback_removals) == len(additions) == 1))
-            ):
-                category = "fallback_to_human_area"
-            if not added:
-                human_removed.add(label)
-        elif human and label == "needs-area-label" and not added:
-            category = "human_fallback_removed"
-        elif not human and added and label in human_removed and event["actor_type"] == "Bot":
-            category = "bot_reapplication"
-        if category:
-            anchor = primary
-            if category in {"fallback_to_human_area", "human_fallback_removed"}:
-                anchor = (
-                    fallback_application
-                    if fallback_application and fallback_application["key"] in confirmed
-                    else None
-                )
-            elapsed = None
-            if anchor and anchor["at"] <= event["at"]:
-                elapsed = int((instant(event["at"]) - instant(anchor["at"])).total_seconds())
-            evidence = confirmed.get(event["key"]) or (
-                confirmed.get(anchor["key"]) if anchor else None
+    index = 0
+    while index < len(events):
+        event = events[index]
+        before = labels.copy()
+        edits = [event]
+        if index + 1 < len(events):
+            following = events[index + 1]
+            addition, removal = (
+                (event, following) if event["event"] == "labeled" else (following, event)
             )
+            # Presentation only: an adjacent add/remove pair, never attribution evidence.
+            if (
+                event["actor"]
+                and event["actor"] == following["actor"]
+                and event["actor_type"] == following["actor_type"] == "User"
+                and 0 <= (instant(following["at"]) - instant(event["at"])).total_seconds() <= 5
+                and addition["event"] == "labeled"
+                and removal["event"] == "unlabeled"
+                and removal["label"] in before
+                and addition["label"] not in before
+            ):
+                edits.append(following)
+        visible = event["actor_type"] == "User" or (
+            event["actor_type"] == "Bot"
+            and event["event"] == "labeled"
+            and event["label"] in human_removed
+        )
+        for edit in edits:
+            if edit["event"] == "labeled":
+                labels.add(edit["label"])
+            else:
+                labels.discard(edit["label"])
+                if edit["actor_type"] == "User":
+                    human_removed.add(edit["label"])
+        if visible and before != labels:
             rows.append(
                 {
                     "item": item_key,
-                    "at": event["at"],
-                    "category": category,
-                    "label": label,
+                    "at": edits[-1]["at"],
                     "actor": event["actor"],
-                    "original_label": anchor["label"] if elapsed is not None else None,
-                    "elapsed_seconds": elapsed,
-                    "replacement": replacement,
-                    "attribution": "confirmed" if event["key"] in confirmed else "timeline",
-                    "event_id": event["id"],
-                    "run": evidence["run"] if evidence else None,
+                    "before": sorted(before),
+                    "after": sorted(labels),
                 }
             )
-        if label == "needs-area-label":
-            active_fallback = added
-            if added:
-                fallback_application = event
-        elif label.startswith("area-"):
-            if added:
-                active_areas.add(label)
-                active_fallback = False
-            else:
-                active_areas.discard(label)
+        index += len(edits)
     return rows
 
 
@@ -231,7 +202,7 @@ def intake_view(item, events, attempts, applications, progress, stream_runs, now
 def report(state, config, now):
     events, attempts, confirmed = reconstruct(state)
     result = {
-        "schema": 1,
+        "schema": 2,
         "built_at": stamp(now),
         "data_as_of": state.get("data_as_of"),
         "last_refresh_attempt": state.get("last_refresh_attempt"),
@@ -338,11 +309,7 @@ def report(state, config, now):
                 hours,
             )
         result["items"].append(row)
-        changes = human_changes(key, item_events, confirmed, primary)
-        for change in changes:
-            run = change.pop("run")
-            change["run_url"] = state["runs"][run]["url"] if run else None
-        result["changes"].extend(changes)
+        result["changes"].extend(label_changes(key, item_events))
     for stream in config["streams"]:
         key = stream_key(stream["repo"], stream["kind"])
         progress = state["streams"].get(key, {})

@@ -7,8 +7,9 @@ const node = (tag, text, className) => {
   if (className) element.className = className;
   return element;
 };
-const date = value => value ? new Date(value).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "Unknown";
+const date = (value, seconds = false) => value ? new Date(value).toISOString().replace("T", " ").slice(0, seconds ? 19 : 16) + " UTC" : "Unknown";
 const label = value => value.replaceAll("_", " ");
+const labelState = values => values.length ? values.join(", ") : "No area label";
 const age = seconds => {
   if (seconds == null) return "Unknown";
   if (seconds < 60) return `${Math.max(0, Math.floor(seconds))}s`;
@@ -127,20 +128,15 @@ function render() {
   if (!waiting.length) emptyTable("waiting", 7, "No waiting items observed in this cohort. Incomplete intake is not proof of none.");
   const changes = data.changes.filter(change => itemIndex.has(change.item)).sort((a, b) => b.at.localeCompare(a.at));
   $("changes").replaceChildren();
-  $("changes-count").textContent = `${changes.length} events`;
+  $("changes-count").textContent = `${changes.length} changes`;
   for (const change of changes) {
     const item = itemIndex.get(change.item);
-    const cell = itemCell(item);
-    cell.append(node("span", date(change.at), "secondary"));
-    const evidence = node("td", `${change.attribution}: event ${change.event_id}`);
-    evidence.append(node("span", change.actor || "Unknown actor", "secondary"));
-    if (change.run_url) evidence.append(safeLink("Application run", change.run_url));
     const tr = node("tr");
-    tr.append(cell, node("td", label(change.category)), node("td", change.original_label || "Not confirmed"),
-      node("td", change.replacement || change.label), node("td", age(change.elapsed_seconds)), evidence);
+    tr.append(itemCell(item), node("td", `${labelState(change.before)} -> ${labelState(change.after)}`),
+      node("td", change.actor || "Unknown"), node("td", date(change.at, true)));
     $("changes").append(tr);
   }
-  if (!changes.length) emptyTable("changes", 6, "No relevant changes observed. See timeline coverage before interpreting this as zero.");
+  if (!changes.length) emptyTable("changes", 4, "No relevant changes observed. See timeline coverage before interpreting this as zero.");
   $("configuration").replaceChildren();
   for (const config of data.configurations) {
     const tr = node("tr");
@@ -177,7 +173,7 @@ fetch("data.json", {cache: "no-store"}).then(response => {
   if (!response.ok) throw new Error(`Evidence request failed (${response.status})`);
   return response.json();
 }).then(value => {
-  if (value.schema !== 1) throw new Error("Unsupported evidence schema");
+  if (value.schema !== 2) throw new Error("Unsupported evidence schema");
   data = value;
   for (const id of ["repo", "kind", "cohort"]) $(id).addEventListener("change", render);
   render();

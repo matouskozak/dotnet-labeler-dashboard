@@ -50,9 +50,9 @@
       <div class="table-wrap"><table><thead><tr><th>Item</th><th>State</th><th>Intake age</th><th>Fallback marker</th><th>Fallback since</th><th>First observed result</th><th>Timeline through</th></tr></thead><tbody id="waiting"></tbody></table></div>
     </section>
     <section class="panel" aria-labelledby="changes-title">
-      <div class="section-head"><h2 id="changes-title">Human changes &amp; bot reapplications</h2><span id="changes-count"></span></div>
-      <p class="caption">Human means a GitHub User actor, not a verified maintainer. A replacement is paired only when exactly one area removal and addition share the same actor and timestamp. Otherwise events stay separate.</p>
-      <div class="table-wrap"><table><thead><tr><th>Item / time</th><th>Change</th><th>Original confirmed label</th><th>Label / replacement</th><th>Elapsed</th><th>Evidence</th></tr></thead><tbody id="changes"></tbody></table></div>
+      <div class="section-head"><h2 id="changes-title">Label changes</h2><span id="changes-count"></span></div>
+      <p class="caption">Human edits and bot reapplications from label history, even while prediction logs are backfilling. Consecutive add/remove edits by the same person within 5 seconds are shown together. This is not a judgment of model accuracy.</p>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Label change</th><th>Changed by</th><th>When</th></tr></thead><tbody id="changes"></tbody></table></div>
     </section>
     <details class="panel">
       <summary>Configuration &amp; operations</summary>

@@ -102,12 +102,15 @@ def test_confirmed_application_removal_and_unambiguous_replacement():
     assert item["confirmed"]
     assert item["removal_7"] is True
     assert item["removal_30"] is None
-    assert [row["category"] for row in result["changes"]] == [
-        "human_area_removed",
-        "human_area_added",
+    assert result["changes"] == [
+        {
+            "item": KEY,
+            "at": "2026-11-11T14:03:01Z",
+            "actor": "human",
+            "before": ["area-Infrastructure"],
+            "after": ["area-Trainers"],
+        }
     ]
-    assert result["changes"][0]["elapsed_seconds"] == 14
-    assert result["changes"][0]["replacement"] == "area-Infrastructure -> area-Trainers"
     assert result["streams"][1]["enabled"] is False
 
 
@@ -149,8 +152,9 @@ def test_repeated_application_is_not_another_followup_sample_and_is_reapplicatio
     result = summarize(state)
     assert len(result["items"]) == 1
     assert result["items"][0]["first_application"]["at"] == AT
-    assert result["changes"][-1]["category"] == "bot_reapplication"
-    assert result["changes"][-1]["attribution"] == "confirmed"
+    assert result["changes"][-1]["actor"] == "github-actions[bot]"
+    assert result["changes"][-1]["before"] == ["area-Trainers"]
+    assert result["changes"][-1]["after"] == ["area-Infrastructure", "area-Trainers"]
 
 
 def test_maturity_needs_observed_through_not_only_wall_clock():
@@ -162,15 +166,19 @@ def test_maturity_needs_observed_through_not_only_wall_clock():
     assert summarize(state, "2026-11-18T14:02:47Z")["items"][0]["removal_7"] is True
 
 
-def test_human_addition_is_not_removal_and_ambiguous_pairs_are_not_invented():
+def test_additional_area_labels_are_not_misreported_as_replacements():
     state = fixture()
     state["events"].pop("e2")
     result = summarize(state)
     assert result["items"][0]["removal_7"] is False
-    assert result["changes"][0]["replacement"] is None
+    assert result["changes"][0]["before"] == ["area-Infrastructure"]
+    assert result["changes"][0]["after"] == ["area-Infrastructure", "area-Trainers"]
     state = fixture()
-    state["events"]["e4"] = {**state["events"]["e3"], "id": 10, "label": "area-Other"}
-    assert all(row["replacement"] is None for row in summarize(state)["changes"])
+    state["events"]["e4"] = {**state["events"]["e3"], "id": 35805626722, "label": "area-Other"}
+    changes = summarize(state)["changes"]
+    assert len(changes) == 2
+    assert changes[0]["after"] == changes[1]["before"] == ["area-Trainers"]
+    assert changes[1]["after"] == ["area-Other", "area-Trainers"]
 
 
 def test_fallback_applied_and_removed_between_scans_is_still_visible():
@@ -184,10 +192,87 @@ def test_fallback_applied_and_removed_between_scans_is_still_visible():
     assert result["items"][0]["fallback"]
     assert not result["items"][0]["needs_area"]
     assert result["items"][0]["removal_7"] is None
-    assert result["changes"][-1]["category"] == "fallback_to_human_area"
-    assert result["changes"][-1]["original_label"] == "needs-area-label"
-    assert result["changes"][-1]["elapsed_seconds"] == 14
-    assert result["changes"][-1]["run_url"].endswith("/43034653858")
+    assert len(result["changes"]) == 1
+    assert result["changes"][0]["before"] == ["needs-area-label"]
+    assert result["changes"][0]["after"] == ["area-Trainers"]
+
+
+@pytest.mark.parametrize("add_first", [True, False])
+def test_runtime_137854_three_second_edit_shows_original_label_without_run_evidence(add_first):
+    state = fixture()
+    state["attempts"].clear()
+    state["runs"].clear()
+    old_label = "area-NativeAOT-coreclr"
+    new_label = "area-System.Diagnostics.Process"
+    state["items"][KEY]["labels"] = [new_label]
+    state["events"]["e1"].update(at="2026-11-18T17:52:56Z", label=old_label)
+    state["events"]["e2"].update(
+        at="2026-11-18T19:52:34Z" if add_first else "2026-11-18T19:52:31Z",
+        label=old_label,
+        actor="jkotas",
+    )
+    state["events"]["e3"].update(
+        at="2026-11-18T19:52:31Z" if add_first else "2026-11-18T19:52:34Z",
+        label=new_label,
+        actor="jkotas",
+    )
+    before = deepcopy(state)
+    result = summarize(state)
+    assert result["changes"] == [
+        {
+            "item": KEY,
+            "at": "2026-11-18T19:52:34Z",
+            "actor": "jkotas",
+            "before": [old_label],
+            "after": [new_label],
+        }
+    ]
+    assert result["items"][0]["unknown"]
+    assert not result["items"][0]["confirmed"]
+    assert result["items"][0]["first_application"] is None
+    assert result["items"][0]["removal_7"] is None
+    assert state == before
+
+
+@pytest.mark.parametrize(
+    ("delay", "actor", "expected_rows"),
+    [(5, "human", 1), (6, "human", 2), (3600, "human", 2), (0, "someone-else", 2), (0, None, 2)],
+)
+def test_edit_grouping_does_not_merge_distant_or_different_actor_changes(
+    delay, actor, expected_rows
+):
+    state = fixture()
+    state["events"]["e3"]["at"] = (
+        (instant(state["events"]["e2"]["at"]) + timedelta(seconds=delay))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    state["events"]["e3"]["actor"] = actor
+    changes = summarize(state)["changes"]
+    assert len(changes) == expected_rows
+    if expected_rows == 2:
+        assert changes[0]["before"] == ["area-Infrastructure"]
+        assert changes[0]["after"] == changes[1]["before"] == []
+        assert changes[1]["after"] == ["area-Trainers"]
+
+
+def test_intervening_edit_prevents_grouping_and_initial_state_is_explicit():
+    state = fixture()
+    state["events"]["e1"].update(actor="first-human", actor_type="User")
+    state["events"]["middle"] = {
+        **state["events"]["e2"],
+        "id": 35805626633,
+        "event": "labeled",
+        "label": "area-Other",
+        "actor": "someone-else",
+    }
+    changes = summarize(state)["changes"]
+    assert len(changes) == 4
+    assert changes[0]["before"] == []
+    assert changes[0]["after"] == ["area-Infrastructure"]
+    assert changes[1]["after"] == changes[2]["before"] == []
+    assert changes[2]["after"] == changes[3]["before"] == ["area-Other"]
+    assert changes[3]["after"] == ["area-Other", "area-Trainers"]
 
 
 def test_unresolved_fallback_and_no_run_intake_remain_in_denominator():
@@ -374,7 +459,7 @@ def test_unavailable_timeline_keeps_unknown_intake_and_blocks_unobserved_followu
     assert item["removal_7"] is None
 
 
-def test_only_first_human_area_addition_resolves_a_waiting_fallback():
+def test_fallback_marker_remains_in_display_until_actually_removed():
     state = fixture()
     state["events"]["e1"]["label"] = "needs-area-label"
     state["events"].pop("e2")
@@ -384,8 +469,10 @@ def test_only_first_human_area_addition_resolves_a_waiting_fallback():
         "at": "2026-11-12T14:03:01Z",
         "label": "area-Other",
     }
-    categories = [row["category"] for row in summarize(state)["changes"]]
-    assert categories == ["fallback_to_human_area", "human_area_added"]
+    changes = summarize(state)["changes"]
+    assert changes[0]["before"] == ["needs-area-label"]
+    assert changes[0]["after"] == changes[1]["before"] == ["area-Trainers", "needs-area-label"]
+    assert changes[1]["after"] == ["area-Other", "area-Trainers", "needs-area-label"]
 
 
 def test_render_does_not_embed_untrusted_text_or_raw_payloads(tmp_path):
