@@ -199,6 +199,80 @@ def intake_view(item, events, attempts, applications, progress, stream_runs, now
     return {"status": status, "evidence_complete": complete}
 
 
+def daily_activity(events, attempts, confirmed):
+    days = defaultdict(set)
+    for event in events:
+        day = event["at"][:10]
+        if event["key"] in confirmed and event["label"].startswith("area-"):
+            days[day].add("applied")
+        if event["actor_type"] == "User":
+            days[day].add("human_changed")
+    for attempt in attempts:
+        if not production(attempt):
+            continue
+        for observation in attempt["observations"]:
+            if observation["action_version"] and observation["outcome"] in {
+                "fallback_applied",
+                "fallback_present",
+                "no_selection",
+            }:
+                days[observation["at"][:10]].add("no_selection")
+    return [{"date": day, "series": sorted(series)} for day, series in sorted(days.items())]
+
+
+def daily_coverage(state, stream, items, runs, now):
+    if not stream["enabled"] or not state.get("cohort_start"):
+        return []
+    start = instant(state["cohort_start"])
+    day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    progress = state["streams"].get(stream_key(stream["repo"], stream["kind"]), {})
+    intake = state["repositories"].get(stream["repo"], {})
+    unknown_dates = set()
+    for attempt in state["attempts"].values():
+        run = state["runs"].get(attempt["run"], {})
+        if not production(attempt) or (run.get("repo"), run.get("kind")) != (
+            stream["repo"],
+            stream["kind"],
+        ):
+            continue
+        results = [row for row in attempt["observations"] if row["outcome"] != "queued"]
+        if not results or any(
+            not row["action_version"] or row["outcome"] in {"unknown", "unsupported"}
+            for row in results
+        ):
+            unknown_dates.update(row["at"][:10] for row in attempt["observations"])
+    coverage = []
+    while day <= now:
+        end = day + timedelta(days=1)
+        lower, upper = stamp(day), stamp(end)
+        run_window_complete = (start <= day and progress.get("backfill_to", "") >= upper) or (
+            progress.get("live_from", "~") <= lower and progress.get("live_to", "") >= upper
+        )
+        complete = bool(
+            intake.get("intake_complete")
+            and (intake.get("updated_checkpoint") or "") >= upper
+            and run_window_complete
+            and lower[:10] not in unknown_dates
+            and all(
+                (item.get("observed_through") or "") >= upper
+                for item in items
+                if item["created_at"] < upper
+            )
+            and not any(
+                lower <= run["created_at"] < upper
+                and (
+                    not run["collected"]
+                    or run["evidence"] not in {"item_results", "no_work"}
+                    or any(not config["action_version"] for config in run.get("configs", []))
+                )
+                for run in runs
+            )
+        )
+        coverage.append({"date": lower[:10], "complete": complete})
+        day = end
+    return coverage
+
+
 def report(state, config, now):
     events, attempts, confirmed = reconstruct(state)
     result = {
@@ -292,6 +366,7 @@ def report(state, config, now):
             "needs_area": not any(label.startswith("area-") for label in item["labels"]),
             "fallback_marker": "needs-area-label" in item["labels"],
             "timeline_unavailable": bool(item.get("timeline_availability")),
+            "activity": daily_activity(item_events, item_attempts, confirmed),
             "waiting_since": waiting_since,
             "original_outcome": observed[0]["outcome"] if observed else "no_observed_result",
             "removal_7": removal_followup(item, primary, item_events, now, 7),
@@ -337,6 +412,7 @@ def report(state, config, now):
                     or item.get("reconcile_requested", False)
                     for item in source_items
                 ),
+                "daily_coverage": daily_coverage(state, stream, source_items, stream_runs, now),
                 "run_attempts": len(stream_runs),
                 "run_evidence": dict(Counter(run["evidence"] for run in stream_runs)),
                 "failure_phases": dict(

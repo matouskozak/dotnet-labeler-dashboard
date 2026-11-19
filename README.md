@@ -50,6 +50,16 @@ present are shown, so adding another area label is not called a replacement.
 The displayed time is the last edit in the pair. Raw timeline events are retained
 unchanged. This grouping never supplies model confirmation or accuracy evidence.
 
+The daily plot counts items per UTC event day: confirmed automatic area
+applications, supported automatic no-selection/fallback results, and human label
+edits (`actor_type=User`). Each item counts once per day per line. Retries and
+add/remove pairs do not inflate counts. The lines may overlap. Repository, type,
+and creation-period filters select the items, and the plot shows activity within
+that period. The 7/30-day selections use UTC calendar days, including today.
+Dashed lines and hollow points are partial observed counts. A zero
+is shown only when intake, run history, and timeline follow-up cover that day.
+Missing history stays unknown, not zero.
+
 Fixed 1h/24h intake denominators retain dashboard cohort items old enough for the
 window, including no-run, failed, fallback, and unknown opportunities. Skip-only
 pre-labeled items are excluded throughout. Incomplete evidence is reported
@@ -63,6 +73,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.12 (uv can install it).
 
 ```text
 uv sync --locked --python 3.12
+uv run playwright install chromium
 uv run pytest
 uv run ruff check .
 uv run labeler-dashboard refresh --max-requests 600
@@ -143,6 +154,21 @@ errors, but the workflow remains failed. Failed persistence prevents deployment.
 The browser independently ages the stale-data banner after three hours, even if
 no new build occurs. Backfill, source freshness, and timeline coverage are shown
 separately.
+
+### Browser caching
+
+The generated HTML versions JS and CSS URLs by a hash of their contents.
+New clients read `data-v2.json`. The public v2 contract is additive: new fields
+do not change its schema number or remove existing fields. `data.json` remains
+a v2 alias for previously deployed clients. The new client also understands v1
+reports, showing legacy added/removed observations without inventing full label
+states. The persisted history schema is unchanged.
+
+A strict v1 script already running in a tab cannot be replaced by a static-site
+deployment. Navigating to the newly versioned entry loads the corrected client.
+Tests reproduce the old cached-script/new-data failure, then verify recovery
+through a fresh entry in the same warm browser. They also cover the v2 alias,
+legacy report input, additive fields, and chart filters.
 
 ## Scope and privacy
 

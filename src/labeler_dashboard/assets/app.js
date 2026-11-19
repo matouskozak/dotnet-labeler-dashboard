@@ -9,7 +9,12 @@ const node = (tag, text, className) => {
 };
 const date = (value, seconds = false) => value ? new Date(value).toISOString().replace("T", " ").slice(0, seconds ? 19 : 16) + " UTC" : "Unknown";
 const label = value => value.replaceAll("_", " ");
-const labelState = values => values.length ? values.join(", ") : "No area label";
+const labelState = values => Array.isArray(values) ? (values.length ? values.join(", ") : "No area label") : "Unknown";
+const series = [
+  ["applied", "Labels applied", "#006c5b"],
+  ["no_selection", "No label chosen", "#986000"],
+  ["human_changed", "Human label changes", "#346cba"],
+];
 const age = seconds => {
   if (seconds == null) return "Unknown";
   if (seconds < 60) return `${Math.max(0, Math.floor(seconds))}s`;
@@ -36,11 +41,116 @@ function emptyTable(id, columns, message) {
   tr.append(td);
   $(id).append(tr);
 }
+function periodStart() {
+  const end = data.built_at.slice(0, 10);
+  const historyStart = data.cohort_start ? data.cohort_start.slice(0, 10) : end;
+  if ($("cohort").value === "all") return historyStart;
+  const first = new Date(`${end}T00:00:00Z`);
+  first.setUTCDate(first.getUTCDate() - Number($("cohort").value) + 1);
+  return [historyStart, first.toISOString().slice(0, 10)].sort().at(-1);
+}
 function selected(item) {
   if ($("repo").value && item.repo !== $("repo").value) return false;
   if ($("kind").value && item.kind !== $("kind").value) return false;
-  return $("cohort").value === "all" ||
-    new Date(item.created_at) >= new Date(new Date(data.built_at) - Number($("cohort").value) * 86400000);
+  return $("cohort").value === "all" || item.created_at.slice(0, 10) >= periodStart();
+}
+function dailyRows(items) {
+  const streams = data.streams.filter(stream => stream.enabled &&
+    (!$("repo").value || stream.repo === $("repo").value) &&
+    (!$("kind").value || stream.kind === $("kind").value));
+  if (!streams.length || !data.cohort_start) return [];
+  const end = data.built_at.slice(0, 10);
+  const start = periodStart();
+  const counts = new Map();
+  for (const item of items) {
+    const seen = new Set();
+    for (const activity of item.activity || []) {
+      if (activity.date < start || activity.date > end) continue;
+      if (!counts.has(activity.date)) counts.set(activity.date, {});
+      for (const name of activity.series) {
+        const key = `${activity.date}:${name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const day = counts.get(activity.date);
+        day[name] = (day[name] || 0) + 1;
+      }
+    }
+  }
+  const rows = [];
+  for (let cursor = new Date(`${start}T00:00:00Z`); cursor.toISOString().slice(0, 10) <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const day = cursor.toISOString().slice(0, 10);
+    rows.push({date: day, counts: counts.get(day) || {}, complete: streams.every(stream =>
+      (stream.daily_coverage || []).some(row => row.date === day && row.complete))});
+  }
+  return rows;
+}
+function renderTrend(items) {
+  if (!$("trend")) return;
+  const rows = dailyRows(items);
+  $("trend").replaceChildren();
+  $("trend-values").replaceChildren();
+  $("trend-legend").replaceChildren(...series.map(([name, text]) => node("span", text, name)));
+  if (!rows.length || data.items.some(item => !Array.isArray(item.activity))) {
+    $("trend").append(node("p", "No daily data for this selection.", "caption"));
+    return;
+  }
+  const svgNode = (tag, attributes, text) => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+    if (text !== undefined) element.textContent = text;
+    return element;
+  };
+  const svg = svgNode("svg", {viewBox: "0 0 960 260", role: "img", "aria-label": "Daily item counts", "aria-describedby": "trend-note"});
+  svg.append(svgNode("title", {}, "Daily item counts"), svgNode("desc", {}, "Each line counts an item once per day. Hollow points and dashed lines are partial observations. Missing counts are unknown."));
+  const maximum = Math.max(1, ...rows.flatMap(row => series.map(([name]) => row.counts[name] || 0)));
+  const x = index => 45 + index * 895 / Math.max(1, rows.length - 1);
+  const y = value => 220 - value * 200 / maximum;
+  for (const value of [...new Set([0, Math.ceil(maximum / 2), maximum])]) {
+    svg.append(svgNode("line", {x1: 45, y1: y(value), x2: 940, y2: y(value), stroke: "#dce4e8"}));
+    svg.append(svgNode("text", {x: 35, y: y(value) + 4, "text-anchor": "end", class: "axis"}, value));
+  }
+  const head = node("tr");
+  head.append(node("th", "Date"), ...series.map(([, text]) => node("th", text)));
+  $("trend-values").append(head);
+  rows.forEach((row, index) => {
+    if (index === 0 || index === rows.length - 1 || index % Math.ceil(rows.length / 6) === 0) {
+      svg.append(svgNode("text", {x: x(index), y: 246, "text-anchor": "middle", class: "axis"}, row.date.slice(5)));
+    }
+    const tr = node("tr");
+    tr.append(node("th", row.date));
+    for (const [name, text, color] of series) {
+      const count = row.counts[name] || 0;
+      const visible = row.complete || count > 0;
+      tr.append(node("td", row.complete ? count : count > 0 ? `${count} (partial)` : "Unknown"));
+      if (!visible) continue;
+      const previous = rows[index - 1];
+      if (previous && (previous.complete || previous.counts[name] > 0)) {
+        svg.append(svgNode("line", {x1: x(index - 1), y1: y(previous.counts[name] || 0), x2: x(index), y2: y(count),
+          stroke: color, "stroke-width": 2, "stroke-dasharray": row.complete && previous.complete ? "none" : "5 4"}));
+      }
+      const description = `${row.date}: ${count} ${text.toLowerCase()}${row.complete ? "" : " (partial)"}`;
+      const point = svgNode("circle", {cx: x(index), cy: y(count), r: 4, fill: row.complete ? color : "white",
+        stroke: color, "stroke-width": 2, tabindex: 0, "aria-label": description});
+      point.append(svgNode("title", {}, description));
+      svg.append(point);
+    }
+    $("trend-values").append(tr);
+  });
+  $("trend").append(svg);
+}
+function changeLabels(change) {
+  if (Array.isArray(change.before) && Array.isArray(change.after)) {
+    return [labelState(change.before), labelState(change.after)];
+  }
+  // Legacy reports have observations, not complete before/after label sets.
+  if (change.replacement && change.replacement.includes(" -> ")) {
+    const [before, after] = change.replacement.split(" -> ");
+    return [`Removed ${before}`, `Added ${after}`];
+  }
+  if (["human_area_removed", "human_fallback_removed"].includes(change.category)) {
+    return [`Removed ${change.label}`, "Unknown"];
+  }
+  return ["Unknown", change.label ? `Added ${change.label}` : "Unknown"];
 }
 function freshness() {
   const banner = $("freshness");
@@ -48,17 +158,21 @@ function freshness() {
   const denied = Object.values(data.permissions).some(repo => Object.values(repo.checks).some(check => !check.ok));
   const stale = elapsed == null || elapsed > 3 * 3600;
   banner.className = "notice" + (denied ? " failure" : stale ? " warning" : "");
+  const partial = data.streams.some(stream => stream.enabled &&
+    (!stream.intake_complete || stream.pending_timelines || stream.backfill_to < stream.live_to ||
+      stream.last_error || ["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key])));
   banner.textContent = denied
-    ? "Source-read preflight incomplete. Results are partial. See Configuration & operations for the exact endpoint and credential requirement."
+    ? "Source access failed. Results are incomplete. See Details."
     : stale
-      ? `Stale or incomplete refresh. Last complete live scan: ${date(data.data_as_of)}. This warning ages in your browser even if builds stop.`
-      : `Live scan through ${date(data.data_as_of)} (${age(elapsed)} ago). Historical backfill and timeline completeness are shown separately below.`;
+      ? `Data is stale. Last complete refresh: ${date(data.data_as_of)}.`
+      : `Updated ${date(data.data_as_of)}.${partial ? " History is incomplete." : ""}`;
 }
 function render() {
   const items = data.items.filter(selected);
   const itemIndex = new Map(items.map(item => [item.key, item]));
   const built = new Date(data.built_at);
-  $("cohort-note").textContent = `${items.length} dashboard items. Intake began ${date(data.cohort_start)}.`;
+  $("cohort-note").textContent = `${items.length} items`;
+  renderTrend(items);
   $("streams").replaceChildren();
   for (const stream of data.streams) {
     const card = node("article", undefined, "stream");
@@ -66,45 +180,37 @@ function render() {
     const complete = stream.enabled && stream.intake_complete && stream.timelines === stream.items &&
       !stream.pending_timelines && stream.backfill_to >= stream.live_to && !stream.last_error &&
       !["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key]);
-    card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "COLLECTED" : "PARTIAL / BACKFILL", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
+    card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "COLLECTED" : "PARTIAL", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
     if (!stream.enabled) {
-      card.append(node("p", "Excluded by design. Not a failure."));
+      card.append(node("p", "Not monitored."));
     } else {
       const cohortItems = items.filter(item => item.repo === stream.repo && item.kind === stream.kind);
-      card.append(node("p", `${stream.items} dashboard items / ${stream.timelines} fully fetched timelines`),
-        node("p", `${stream.pending_timelines} timelines pending reconciliation`),
-        node("p", `Selected cohort: ${cohortItems.filter(item => item.confirmed).length} confirmed areas / ${cohortItems.filter(item => item.fallback).length} observed fallbacks`),
-        node("p", `Run backfill through ${date(stream.backfill_to)}`),
-        node("p", `Last live success ${date(stream.last_success)}`));
-      if (stream.last_error) card.append(node("p", stream.last_error));
-      if (stream.feed_gap) card.append(node("p", "Event-feed gap detected. Complete timelines are authoritative."));
+      card.append(node("p", `${cohortItems.length} selected / ${stream.items} collected items`),
+        node("p", `${stream.timelines} timelines / ${stream.pending_timelines} pending`));
     }
     $("streams").append(card);
   }
   $("metrics").replaceChildren();
   const metrics = [
-    ["confirmed", "Confirmed area applications", true],
-    ["probable", "Applied result, unconfirmed mutation"],
-    ["fallback", "Observed no-selection fallbacks"],
-    ["technical_failure", "Explicit item application failures"],
-    ["unknown", "Items with unknown evidence"],
-    ["needs_area", "Currently waiting for an area"],
+    ["confirmed", "Confirmed labels", true],
+    ["probable", "Unconfirmed applications"],
+    ["fallback", "Fallbacks"],
+    ["technical_failure", "Application failures"],
+    ["unknown", "Unknown outcomes"],
+    ["needs_area", "No area label"],
   ];
   for (const [field, title, primary] of metrics) {
     const card = node("div", undefined, `metric${primary ? " primary" : ""}`);
     card.append(node("div", items.filter(item => item[field]).length, "value"), node("div", title, "label"));
     $("metrics").append(card);
   }
-  const attempts = node("div", undefined, "metric");
-  attempts.append(node("div", items.reduce((sum, item) => sum + item.production_attempt_count, 0), "value"), node("div", "Production attempts (not samples)", "label"));
-  $("metrics").append(attempts);
   $("followup").replaceChildren();
   for (const days of [7, 30]) {
     const eligible = items.filter(item => item[`removal_${days}`] !== null);
     const removed = eligible.filter(item => item[`removal_${days}`]).length;
     const row = node("div", undefined, "stat-line");
     row.append(node("span", `${days}-day human area removal`),
-      node("strong", eligible.length ? `${removed} / ${eligible.length} (${(removed / eligible.length * 100).toFixed(1)}%)` : "Insufficient mature evidence"));
+      node("strong", eligible.length ? `${removed} / ${eligible.length} (${(removed / eligible.length * 100).toFixed(1)}%)` : "Not enough follow-up"));
     $("followup").append(row);
   }
   $("intake").replaceChildren();
@@ -113,8 +219,8 @@ function render() {
     const confirmed = eligible.filter(row => row.status === "confirmed").length;
     const incomplete = eligible.filter(row => !row.evidence_complete).length;
     const row = node("div", undefined, "stat-line");
-    row.append(node("span", `${hours}h from creation`), node("strong", eligible.length ? `${confirmed} confirmed / ${eligible.length} mature intakes` : "No mature intake yet"));
-    $("intake").append(row, node("p", `${incomplete} have incomplete evidence. Skip-only pre-labeled items are excluded from the dashboard cohort.`, "caption"));
+    row.append(node("span", `${hours}h from creation`), node("strong", eligible.length ? `${confirmed} labeled / ${eligible.length} eligible items` : "No eligible items"));
+    $("intake").append(row, node("p", `${incomplete} with incomplete history.`, "caption"));
   }
   const waiting = items.filter(item => item.needs_area).sort((a, b) => a.created_at.localeCompare(b.created_at));
   $("waiting").replaceChildren();
@@ -122,21 +228,22 @@ function render() {
   for (const item of waiting) {
     const tr = node("tr");
     tr.append(itemCell(item), node("td", `${item.state}${item.timeline_unavailable ? " / timeline unavailable" : ""}`), node("td", age((built - new Date(item.created_at)) / 1000)), node("td", item.fallback_marker ? "Present" : "Absent"),
-      node("td", date(item.waiting_since)), node("td", label(item.original_outcome)), node("td", date(item.observed_through)));
+      node("td", date(item.waiting_since)), node("td", label(item.original_outcome)));
     $("waiting").append(tr);
   }
-  if (!waiting.length) emptyTable("waiting", 7, "No waiting items observed in this cohort. Incomplete intake is not proof of none.");
+  if (!waiting.length) emptyTable("waiting", 6, "None recorded in this period.");
   const changes = data.changes.filter(change => itemIndex.has(change.item)).sort((a, b) => b.at.localeCompare(a.at));
   $("changes").replaceChildren();
   $("changes-count").textContent = `${changes.length} changes`;
   for (const change of changes) {
     const item = itemIndex.get(change.item);
     const tr = node("tr");
-    tr.append(itemCell(item), node("td", `${labelState(change.before)} -> ${labelState(change.after)}`),
+    const [before, after] = changeLabels(change);
+    tr.append(itemCell(item), node("td", before), node("td", after),
       node("td", change.actor || "Unknown"), node("td", date(change.at, true)));
     $("changes").append(tr);
   }
-  if (!changes.length) emptyTable("changes", 4, "No relevant changes observed. See timeline coverage before interpreting this as zero.");
+  if (!changes.length) emptyTable("changes", 5, "None recorded in this period.");
   $("configuration").replaceChildren();
   for (const config of data.configurations) {
     const tr = node("tr");
@@ -147,38 +254,39 @@ function render() {
       node("td", "Unknown"), node("td", config.run_attempts));
     $("configuration").append(tr);
   }
-  if (!data.configurations.length) emptyTable("configuration", 6, "No configuration evidence collected yet.");
+  if (!data.configurations.length) emptyTable("configuration", 6, "No configuration data.");
   $("permissions").replaceChildren();
   for (const [repo, permission] of Object.entries(data.permissions)) {
     for (const [endpoint, check] of Object.entries(permission.checks)) {
-      $("permissions").append(node("div", `${repo} / ${endpoint}: ${check.ok ? "verified read" : check.reason} (${date(permission.checked_at)})`, "ops-row"));
+      $("permissions").append(node("div", `${repo} / ${endpoint}: ${check.ok ? "OK" : check.reason} (${date(permission.checked_at)})`, "ops-row"));
     }
   }
   $("operations").replaceChildren(
     node("div", `Build: ${date(data.built_at)}. Refresh attempted: ${date(data.last_refresh_attempt)}. Requests used: ${data.requests_used ?? "unknown"}. Remaining API quota: ${data.rate_remaining ?? "unknown"}. Budget pause: ${data.budget_paused ? "yes (resumable)" : "no"}.`, "ops-row")
   );
   for (const stream of data.streams.filter(stream => stream.enabled)) {
+    $("operations").append(node("div", `${stream.repo} / ${stream.kind}: history through ${date(stream.backfill_to)}. Last live refresh ${date(stream.last_success)}.${stream.last_error ? " " + stream.last_error : ""}${stream.feed_gap ? " Event-feed gap recorded." : ""}`, "ops-row"));
     $("operations").append(node("div", `${stream.repo} / ${stream.kind}: ${stream.run_attempts} collected workflow run attempts (all items, independent of dashboard cohort). ${Object.entries(stream.run_evidence).map(([name, count]) => `${label(name)} ${count}`).join(", ") || "No runs observed"}. Oldest retry audit: ${date(stream.oldest_retry_check)}.`, "ops-row"));
     if (Object.keys(stream.failure_phases).length) $("operations").append(node("div", `Explicit failed steps: ${Object.entries(stream.failure_phases).map(([name, count]) => `${label(name)} ${count}`).join(", ")}. These are run-level failures, not inferred per-item outcomes.`, "ops-row"));
   }
-  $("operations").append(node("p", "Run-created windows are bounded and resumable. A rotating audit detects reruns whose original creation date is outside the live window. Historical reruns can remain undiscovered until audited. Expired logs are retained as gaps and are not requested repeatedly.", "caption"));
+  $("operations").append(node("p", "History collection resumes each refresh. Old reruns are checked in rotation. Expired logs remain gaps.", "caption"));
   $("errors").replaceChildren();
   for (const error of data.errors) {
     $("errors").append(node("div", `${date(error.last_seen)} / ${error.stage}: ${error.message} (${error.count} occurrences)`, "ops-row"));
   }
-  if (!data.errors.length) $("errors").append(node("p", "No collector errors recorded. Partial backfill and unknown source evidence are still reported separately.", "caption"));
+  if (!data.errors.length) $("errors").append(node("p", "None recorded.", "caption"));
   freshness();
 }
-fetch("data.json", {cache: "no-store"}).then(response => {
-  if (!response.ok) throw new Error(`Evidence request failed (${response.status})`);
+fetch("data-v2.json", {cache: "no-store"}).then(response => {
+  if (!response.ok) throw new Error(`Data request failed (${response.status})`);
   return response.json();
 }).then(value => {
-  if (value.schema !== 2) throw new Error("Unsupported evidence schema");
+  if (![1, 2].includes(value.schema)) throw new Error("Unsupported data format");
   data = value;
   for (const id of ["repo", "kind", "cohort"]) $(id).addEventListener("change", render);
   render();
   setInterval(freshness, 60000);
 }).catch(error => {
   $("freshness").className = "notice failure";
-  $("freshness").textContent = `Dashboard evidence could not be loaded: ${error.message}. No metrics are available.`;
+  $("freshness").textContent = `Could not load data: ${error.message}.`;
 });

@@ -4,66 +4,70 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'">
-  <meta name="description" content="Read-only, evidence-based monitoring of the .NET issue labeler.">
-  <title>.NET labeler observatory</title>
+  <meta name="description" content="Issue labeler results and label changes.">
+  <title>Issue labeler dashboard</title>
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <main>
     <header>
-      <div><p class="eyebrow">DOTNET / PRODUCTION MONITORING</p>
-        <h1>Labeler observatory<span class="dot">.</span></h1>
-        <p class="lede">What the automation applied. What humans changed. What the evidence cannot tell us.</p>
-      </div>
-      <a class="source" href="https://github.com/matouskozak/dotnet-labeler-dashboard">Source &amp; methodology &#8599;</a>
+      <h1>Issue labeler dashboard</h1>
+      <a class="source" href="https://github.com/matouskozak/dotnet-labeler-dashboard">Source</a>
     </header>
-    <div id="freshness" role="status" class="notice">Loading persisted evidence...</div>
-    <noscript><p class="notice warning">JavaScript is required to filter this static dashboard. The source repository describes the data format.</p></noscript>
+    <div id="freshness" role="status" class="notice">Loading...</div>
+    <noscript><p class="notice warning">Enable JavaScript to view the dashboard.</p></noscript>
     <section class="filters" aria-label="Cohort filters">
       <label>Repository<select id="repo"><option value="">All repositories</option><option>dotnet/runtime</option><option>dotnet/machinelearning</option></select></label>
       <label>Item type<select id="kind"><option value="">Issues &amp; pull requests</option><option value="issue">Issues</option><option value="pr">Pull requests</option></select></label>
-      <label>Created cohort<select id="cohort"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="all">All accumulated intake</option></select></label>
+      <label>Created<select id="cohort"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="all">All collected</option></select></label>
       <p id="cohort-note"></p>
     </section>
+    <section class="panel" aria-labelledby="trend-title">
+      <h2 id="trend-title">Daily activity</h2>
+      <div id="trend-legend" class="legend"></div>
+      <div id="trend"></div>
+      <p id="trend-note" class="caption">Items per day (UTC) in the selected creation period. Dashed lines show partial counts. Gaps are unknown, not zero.</p>
+      <div class="sr-only"><table id="trend-values"></table></div>
+    </section>
     <section aria-labelledby="streams-title">
-      <div class="section-head"><h2 id="streams-title">Dashboard coverage</h2><span>Open, closed, and merged items</span></div>
+      <div class="section-head"><h2 id="streams-title">Coverage</h2></div>
       <div id="streams" class="streams"></div>
-      <p class="caption">Pre-labeled items with only automatic existing-area skips are excluded throughout. Items with another automatic prediction result, unknown evidence, or no run remain included.</p>
     </section>
     <section aria-labelledby="outcomes-title">
-      <div class="section-head"><h2 id="outcomes-title">Observed outcomes</h2><span>Item counts, not repeated-attempt samples</span></div>
+      <div class="section-head"><h2 id="outcomes-title">Results</h2><span>Items, not retries</span></div>
       <div id="metrics" class="metrics"></div>
-      <p class="caption">Categories can overlap. Confirmation requires an explicit, supported predictor result and a unique matching label mutation. A green run or shared bot identity alone is not confirmation.</p>
+      <p class="caption">Counts can overlap.</p>
     </section>
     <section class="two-column">
       <article class="panel"><h2>Human removal follow-up</h2><div id="followup"></div>
-        <p class="caption">First confirmed area application per item. Only sufficiently old applications with a complete timeline through the deadline enter the denominator. This is not prediction accuracy.</p>
+        <p class="caption">First confirmed application per item, with complete follow-up. Not an accuracy score.</p>
       </article>
-      <article class="panel"><h2>Fixed intake windows</h2><div id="intake"></div>
-        <p class="caption">Denominator: dashboard cohort items old enough for the window. Skip-only pre-labeled items are excluded. No-run, failed, fallback, and unknown opportunities remain included. Manual and dry-run attempts are excluded.</p>
+      <article class="panel"><h2>Labeling within 1h / 24h</h2><div id="intake"></div>
+        <p class="caption">Includes items without a run or result. Pre-labeled skip-only items are excluded.</p>
       </article>
     </section>
     <section class="panel" aria-labelledby="waiting-title">
       <div class="section-head"><h2 id="waiting-title">Needs an area label</h2><span id="waiting-count"></span></div>
-      <p class="caption">Dashboard cohort items currently without an area label, including closed items and items with no run or fallback marker. Waiting remains visible until resolved, rather than disappearing from latency statistics.</p>
-      <div class="table-wrap"><table><thead><tr><th>Item</th><th>State</th><th>Intake age</th><th>Fallback marker</th><th>Fallback since</th><th>First observed result</th><th>Timeline through</th></tr></thead><tbody id="waiting"></tbody></table></div>
+      <p class="caption">Open and closed items without an area label.</p>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>State</th><th>Age</th><th>Fallback</th><th>Fallback since</th><th>First result</th></tr></thead><tbody id="waiting"></tbody></table></div>
     </section>
     <section class="panel" aria-labelledby="changes-title">
       <div class="section-head"><h2 id="changes-title">Label changes</h2><span id="changes-count"></span></div>
-      <p class="caption">Human edits and bot reapplications from label history, even while prediction logs are backfilling. Consecutive add/remove edits by the same person within 5 seconds are shown together. This is not a judgment of model accuracy.</p>
-      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Label change</th><th>Changed by</th><th>When</th></tr></thead><tbody id="changes"></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>Before</th><th>After</th><th>Changed by</th><th>When</th></tr></thead><tbody id="changes"></tbody></table></div>
     </section>
     <details class="panel">
-      <summary>Configuration &amp; operations</summary>
-      <p class="caption">Operations and configuration counts cover all collected workflow runs, independently of the filtered dashboard item cohort. Thresholds and action revisions below are observed in logs, not inferred from the current workflow. Branches are kept separate. An action SHA or cache hit is not a model identity. Historical model versions are unknown.</p>
+      <summary>Details</summary>
+      <p class="caption">Confirmation requires a predictor result and matching label event. Manual and dry-run attempts are excluded. Skip-only pre-labeled items are hidden. Unknown results remain included.</p>
+      <p class="caption">Human label edits and bot reapplications come from timeline history. Adjacent add/remove edits by the same person within 5 seconds share one row. This does not confirm a prediction. Daily lines count each item once per day per result and can overlap.</p>
+      <p class="caption">Configuration and run counts below include all collected runs, not just displayed items. Thresholds come from logs. Model versions are unknown.</p>
       <div class="table-wrap"><table><thead><tr><th>Stream / branch</th><th>Threshold</th><th>Action</th><th>Cache hit</th><th>Model</th><th>Run attempts</th></tr></thead><tbody id="configuration"></tbody></table></div>
-      <h3>Actual collector credential preflight</h3><div id="permissions"></div>
-      <p class="caption">If source permissions are missing, configure LABELER_READ_TOKEN as a read-only fine-grained PAT or installation token with Actions, Issues, Pull requests, and Metadata read access to both source repositories. No source-write permission is needed. The dashboard's GITHUB_TOKEN is tested, never assumed to have cross-repository log access.</p>
-      <h3>Collection details</h3><div id="operations"></div>
-      <h3>Retained collector errors</h3><div id="errors"></div>
+      <h3>Source access</h3><div id="permissions"></div>
+      <p class="caption">Missing access: see the README for read-only LABELER_READ_TOKEN permissions.</p>
+      <h3>Collection</h3><div id="operations"></div>
+      <h3>Errors</h3><div id="errors"></div>
     </details>
-    <footer>Read-only v1. No accuracy or precision claims. No raw logs, issue bodies, model files, or credentials are published. History is retained on the data branch. Refresh is scheduled hourly at minute 17.</footer>
+    <footer>Scheduled hourly. All times UTC.</footer>
   </main>
 </body>
 </html>
