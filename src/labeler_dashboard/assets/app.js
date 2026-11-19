@@ -57,7 +57,7 @@ function render() {
   const items = data.items.filter(selected);
   const itemIndex = new Map(items.map(item => [item.key, item]));
   const built = new Date(data.built_at);
-  $("cohort-note").textContent = `${items.length} observed items. Intake began ${date(data.cohort_start)}.`;
+  $("cohort-note").textContent = `${items.length} dashboard items. Intake began ${date(data.cohort_start)}.`;
   $("streams").replaceChildren();
   for (const stream of data.streams) {
     const card = node("article", undefined, "stream");
@@ -70,7 +70,7 @@ function render() {
       card.append(node("p", "Excluded by design. Not a failure."));
     } else {
       const cohortItems = items.filter(item => item.repo === stream.repo && item.kind === stream.kind);
-      card.append(node("p", `${stream.items} intake items / ${stream.timelines} fully fetched timelines`),
+      card.append(node("p", `${stream.items} dashboard items / ${stream.timelines} fully fetched timelines`),
         node("p", `${stream.pending_timelines} timelines pending reconciliation`),
         node("p", `Selected cohort: ${cohortItems.filter(item => item.confirmed).length} confirmed areas / ${cohortItems.filter(item => item.fallback).length} observed fallbacks`),
         node("p", `Run backfill through ${date(stream.backfill_to)}`),
@@ -85,7 +85,6 @@ function render() {
     ["confirmed", "Confirmed area applications", true],
     ["probable", "Applied result, unconfirmed mutation"],
     ["fallback", "Observed no-selection fallbacks"],
-    ["skip", "Existing-area skips"],
     ["technical_failure", "Explicit item application failures"],
     ["unknown", "Items with unknown evidence"],
     ["needs_area", "Currently waiting for an area"],
@@ -111,11 +110,10 @@ function render() {
   for (const hours of [1, 24]) {
     const eligible = items.map(item => item[`intake_${hours}`]).filter(Boolean);
     const confirmed = eligible.filter(row => row.status === "confirmed").length;
-    const skipped = eligible.filter(row => row.status === "preexisting_human_skip").length;
     const incomplete = eligible.filter(row => !row.evidence_complete).length;
     const row = node("div", undefined, "stat-line");
     row.append(node("span", `${hours}h from creation`), node("strong", eligible.length ? `${confirmed} confirmed / ${eligible.length} mature intakes` : "No mature intake yet"));
-    $("intake").append(row, node("p", `${skipped} preexisting-human-label skips. ${incomplete} have incomplete evidence. All other opportunities remain in the denominator.`, "caption"));
+    $("intake").append(row, node("p", `${incomplete} have incomplete evidence. Skip-only pre-labeled items are excluded from the dashboard cohort.`, "caption"));
   }
   const waiting = items.filter(item => item.needs_area).sort((a, b) => a.created_at.localeCompare(b.created_at));
   $("waiting").replaceChildren();
@@ -164,7 +162,7 @@ function render() {
     node("div", `Build: ${date(data.built_at)}. Refresh attempted: ${date(data.last_refresh_attempt)}. Requests used: ${data.requests_used ?? "unknown"}. Remaining API quota: ${data.rate_remaining ?? "unknown"}. Budget pause: ${data.budget_paused ? "yes (resumable)" : "no"}.`, "ops-row")
   );
   for (const stream of data.streams.filter(stream => stream.enabled)) {
-    $("operations").append(node("div", `${stream.repo} / ${stream.kind}: ${stream.run_attempts} run attempts. ${Object.entries(stream.run_evidence).map(([name, count]) => `${label(name)} ${count}`).join(", ") || "No runs observed"}. Oldest retry audit: ${date(stream.oldest_retry_check)}.`, "ops-row"));
+    $("operations").append(node("div", `${stream.repo} / ${stream.kind}: ${stream.run_attempts} collected workflow run attempts (all items, independent of dashboard cohort). ${Object.entries(stream.run_evidence).map(([name, count]) => `${label(name)} ${count}`).join(", ") || "No runs observed"}. Oldest retry audit: ${date(stream.oldest_retry_check)}.`, "ops-row"));
     if (Object.keys(stream.failure_phases).length) $("operations").append(node("div", `Explicit failed steps: ${Object.entries(stream.failure_phases).map(([name, count]) => `${label(name)} ${count}`).join(", ")}. These are run-level failures, not inferred per-item outcomes.`, "ops-row"));
   }
   $("operations").append(node("p", "Run-created windows are bounded and resumable. A rotating audit detects reruns whose original creation date is outside the live window. Historical reruns can remain undiscovered until audited. Expired logs are retained as gaps and are not requested repeatedly.", "caption"));

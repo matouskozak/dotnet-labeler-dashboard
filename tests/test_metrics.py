@@ -1,5 +1,8 @@
+import json
 from copy import deepcopy
 from datetime import timedelta
+
+import pytest
 
 from labeler_dashboard.metrics import reconstruct, report
 from labeler_dashboard.render import render
@@ -199,13 +202,146 @@ def test_unresolved_fallback_and_no_run_intake_remain_in_denominator():
     assert item["intake_24"]["status"] == "no_confirmed_application"
 
 
-def test_preexisting_human_skip_is_separate():
+@pytest.mark.parametrize("timeline_complete", [True, False])
+def test_prelabeled_137902_skip_only_is_excluded_everywhere_without_deleting_history(
+    tmp_path, timeline_complete
+):
     state = fixture()
-    state["events"]["e1"].update(actor="human", actor_type="User")
-    state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
+    key = "dotnet/runtime:6488648182"
+    item = state["items"].pop(KEY)
+    item.update(
+        repo="dotnet/runtime",
+        id=6488648182,
+        number=137902,
+        state="open",
+        url="https://github.com/dotnet/runtime/issues/137902",
+        created_at="2026-11-19T11:34:28Z",
+        labels=["area-CodeGen-coreclr"],
+    )
+    if not timeline_complete:
+        item.pop("observed_through")
+    state["items"][key] = item
+    state["events"] = {
+        "e1": {
+            **state["events"]["e1"],
+            "repo": item["repo"],
+            "item": key,
+            "at": "2026-11-19T11:34:29Z",
+            "label": "area-CodeGen-coreclr",
+            "actor": "EgorBo",
+            "actor_type": "User",
+        }
+    }
+    run = state["runs"]["run1"]
+    run.update(repo=item["repo"], created_at="2026-11-19T11:34:32Z")
+    attempt = state["attempts"]["a1"]
+    attempt.update(repo=item["repo"], number=item["number"])
+    observation = attempt["observations"][0]
+    observation.update(
+        at="2026-11-19T11:34:48Z", outcome="existing_area_skip", label="area-CodeGen-coreclr"
+    )
+    attempt["observations"].insert(0, {**observation, "outcome": "queued", "label": None})
+    state["attempts"]["a2"] = deepcopy(attempt)
+    retained_key = "dotnet/runtime:999"
+    state["items"][retained_key] = {
+        **item,
+        "id": 999,
+        "number": 999,
+        "url": "https://github.com/dotnet/runtime/issues/999",
+        "labels": [],
+        "observed_through": None,
+    }
+    config = {"streams": [{"repo": "dotnet/runtime", "kind": "issue", "enabled": True}]}
+    before = deepcopy(state)
+    render(state, config, instant("2026-11-21T12:00:00Z"), tmp_path)
+    public = (tmp_path / "data.json").read_text(encoding="utf-8")
+    result = json.loads(public)
+    assert "137902" not in public
+    assert [row["key"] for row in result["items"]] == [retained_key]
+    assert result["changes"] == []
+    assert result["streams"][0]["items"] == 1
+    assert result["streams"][0]["timelines"] == 0
+    assert result["streams"][0]["pending_timelines"] == 1
+    assert result["streams"][0]["run_attempts"] == 1
+    assert sum(row["intake_1"] is not None for row in result["items"]) == 1
+    assert sum(row["intake_24"] is not None for row in result["items"]) == 1
+    assert state == before
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "area_applied",
+        "fallback_applied",
+        "fallback_present",
+        "no_selection",
+        "application_failure",
+        "unsupported",
+        "unknown",
+        "queued",
+    ],
+)
+def test_automatic_prediction_or_unknown_attempt_followed_by_skip_stays_visible(outcome):
+    state = fixture()
+    state["attempts"]["a1"]["observations"][0]["outcome"] = outcome
+    state["attempts"]["a2"] = deepcopy(state["attempts"]["a1"])
+    state["attempts"]["a2"]["observations"][0].update(
+        at="2026-11-12T14:02:47Z",
+        outcome="existing_area_skip",
+    )
     result = summarize(state)
-    assert not result["items"][0]["confirmed"]
-    assert result["items"][0]["intake_1"]["status"] == "preexisting_human_skip"
+    assert [row["key"] for row in result["items"]] == [KEY]
+    assert result["items"][0]["production_attempt_count"] == 2
+    assert result["streams"][0]["items"] == 1
+    assert result["changes"]
+    if outcome == "area_applied":
+        assert result["items"][0]["confirmed"]
+        assert result["items"][0]["removal_7"] is True
+    # A supported earlier skip must not erase a later prediction either.
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
+    state["attempts"]["a2"]["observations"][0]["outcome"] = outcome
+    assert summarize(state)["items"][0]["key"] == KEY
+
+
+@pytest.mark.parametrize("excluded_mode", ["manual", "dry_run"])
+@pytest.mark.parametrize("automatic_prediction", [False, True])
+def test_manual_or_dry_run_skip_does_not_exclude_an_item(excluded_mode, automatic_prediction):
+    state = fixture()
+    skip = deepcopy(state["attempts"]["a1"])
+    skip[excluded_mode] = True
+    skip["observations"][0]["outcome"] = "existing_area_skip"
+    if not automatic_prediction:
+        state["attempts"].clear()
+    state["attempts"]["skip"] = skip
+    item = summarize(state)["items"][0]
+    assert item["key"] == KEY
+    assert item["production_attempt_count"] == int(automatic_prediction)
+    assert item["confirmed"] == automatic_prediction
+
+
+@pytest.mark.parametrize("scenario", ["no_run", "unsupported_skip", "empty_attempt"])
+def test_absent_or_unsupported_outcomes_do_not_prove_a_prelabel_skip(scenario):
+    state = fixture()
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
+    if scenario == "no_run":
+        state["attempts"].clear()
+    elif scenario == "unsupported_skip":
+        state["attempts"]["a1"]["observations"][0]["action_version"] = None
+    else:
+        state["attempts"]["a2"] = {**state["attempts"]["a1"], "observations": []}
+    result = summarize(state)
+    assert result["items"][0]["key"] == KEY
+    assert result["streams"][0]["items"] == 1
+    assert result["changes"]
+
+
+def test_exclusion_is_recomputed_when_new_prediction_evidence_arrives():
+    state = fixture()
+    prediction = deepcopy(state["attempts"]["a1"])
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
+    assert not summarize(state)["items"]
+    state["attempts"]["a2"] = prediction
+    assert summarize(state)["items"][0]["confirmed"]
 
 
 def test_future_deadline_does_not_enter_intake_denominator():

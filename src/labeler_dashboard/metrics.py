@@ -8,6 +8,21 @@ def production(attempt):
     return not attempt["manual"] and not attempt["dry_run"]
 
 
+def only_existing_area_skips(attempts):
+    if not attempts:
+        return False
+    for attempt in attempts:
+        results = [row for row in attempt["observations"] if row["outcome"] != "queued"]
+        if not results or any(
+            row["outcome"] != "existing_area_skip"
+            or not row["action_version"]
+            or not (row["label"] or "").startswith("area-")
+            for row in results
+        ):
+            return False
+    return True
+
+
 def reconstruct(state):
     events = defaultdict(list)
     attempts = defaultdict(list)
@@ -240,6 +255,8 @@ def report(state, config, now):
         item_events = events[key]
         item_attempts = attempts[key]
         production_attempts = [row for row in item_attempts if production(row)]
+        if only_existing_area_skips(production_attempts):
+            continue
         observed = [
             observation
             for attempt in production_attempts
@@ -336,11 +353,7 @@ def report(state, config, now):
         ]
         repo_progress = state["repositories"].get(stream["repo"], {})
         stream_runs = runs_by_stream[key]
-        source_items = [
-            item
-            for item in state["items"].values()
-            if item["repo"] == stream["repo"] and item["kind"] == stream["kind"]
-        ]
+        source_items = [state["items"][item["key"]] for item in items]
         result["streams"].append(
             {
                 **stream,

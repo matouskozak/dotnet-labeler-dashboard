@@ -11,11 +11,19 @@ ML.NET pull requests are **not enabled**, not failures. Intake includes open,
 closed, and merged items. Filters select repository, item type, and creation cohort.
 
 The dashboard separates confirmed area applications, no-selection fallbacks,
-existing-area skips, application failures, and unknown evidence. It shows all
-monitored items currently lacking an area label (with or without a fallback
-marker or observed run), human area changes, fallback resolutions, and bot
+application failures, and unknown evidence. It shows dashboard cohort items
+currently lacking an area label (with or without a fallback marker or observed
+run), human area changes, fallback resolutions, and bot
 reapplications. It does **not** claim prediction accuracy, precision, or exact
 scoring coverage.
+
+Items whose automatic attempts only report supported existing-area skips are
+excluded from the published item dataset, tables, item counts, and intake
+denominators. A later skip does not hide an item with another automatic prediction,
+application, fallback, failure, or unknown result. No-run items, unsupported
+evidence, and manual/dry-run-only skips remain visible. This is a derived report
+filter, not deletion of collected history. Configuration and operational run
+counts cover all collected workflow runs separately from the dashboard item cohort.
 
 Confirmation requires both a supported, explicit per-item predictor result and a
 unique matching `github-actions[bot]` label mutation inside the predictor step.
@@ -30,12 +38,12 @@ without removal is not a correction. Only an unambiguous single removal/addition
 by the same actor at the same timestamp is paired as a replacement. Human actors
 are not assumed to be maintainers.
 
-Fixed 1h/24h intake denominators retain all observed items old enough for the
-window, including no-run, failed, fallback, and unknown opportunities. Human
-pre-label skips and incomplete evidence are reported separately. Manual and
-dry-run attempts do not enter production metrics. Waiting fallback items remain
-visible until resolved. A fallback proves no area selection, not necessarily an
-exact below-threshold cause.
+Fixed 1h/24h intake denominators retain dashboard cohort items old enough for the
+window, including no-run, failed, fallback, and unknown opportunities. Skip-only
+pre-labeled items are excluded throughout. Incomplete evidence is reported
+separately. Manual and dry-run attempts do not enter production metrics. Waiting
+fallback items remain visible until resolved. A fallback proves no area selection,
+not necessarily an exact below-threshold cause.
 
 ## Run locally
 
