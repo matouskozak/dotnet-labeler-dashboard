@@ -152,17 +152,26 @@ function changeLabels(change) {
   }
   return ["Unknown", change.label ? `Added ${change.label}` : "Unknown"];
 }
+function incompleteProduction(stream) {
+  return stream.production_incomplete_runs ?? (
+    ["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key]) ? 1 : 0
+  );
+}
 function freshness() {
   const banner = $("freshness");
   const elapsed = data.data_as_of ? (Date.now() - new Date(data.data_as_of)) / 1000 : null;
-  const denied = Object.values(data.permissions).some(repo => Object.values(repo.checks).some(check => !check.ok));
+  const checks = Object.values(data.permissions).flatMap(repo => Object.values(repo.checks));
+  const denied = checks.some(check => !check.ok && check.state !== "unverified");
+  const unverified = checks.some(check => check.state === "unverified");
   const stale = elapsed == null || elapsed > 3 * 3600;
-  banner.className = "notice" + (denied ? " failure" : stale ? " warning" : "");
+  banner.className = "notice" + (denied ? " failure" : stale || unverified ? " warning" : "");
   const partial = data.streams.some(stream => stream.enabled &&
     (!stream.intake_complete || stream.pending_timelines || stream.backfill_to < stream.live_to ||
-      stream.last_error || ["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key])));
+      stream.last_error || incompleteProduction(stream)));
   banner.textContent = denied
     ? "Source access failed. Results are incomplete. See Details."
+    : unverified
+      ? "Some source access checks are unverified. See Details."
     : stale
       ? `Data is stale. Last complete refresh: ${date(data.data_as_of)}.`
       : `Updated ${date(data.data_as_of)}.${partial ? " History is incomplete." : ""}`;
@@ -179,7 +188,7 @@ function render() {
     card.append(node("h3", `${stream.repo.replace("dotnet/", "")} / ${stream.kind === "pr" ? "Pull requests" : "Issues"}`));
     const complete = stream.enabled && stream.intake_complete && stream.timelines === stream.items &&
       !stream.pending_timelines && stream.backfill_to >= stream.live_to && !stream.last_error &&
-      !["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key]);
+      !incompleteProduction(stream);
     card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "COLLECTED" : "PARTIAL", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
     if (!stream.enabled) {
       card.append(node("p", "Not monitored."));

@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 
+from labeler_dashboard.evidence import parse_log
 from labeler_dashboard.metrics import reconstruct, report
 from labeler_dashboard.render import render
 from labeler_dashboard.store import empty_state, instant
@@ -63,6 +64,10 @@ def fixture():
         "kind": "issue",
         "url": "https://github.com/dotnet/machinelearning/actions/runs/43034653858",
         "created_at": "2026-11-11T14:02:20Z",
+        "started_at": "2026-11-11T14:02:20Z",
+        "completed_at": "2026-11-11T14:03:00Z",
+        "updated_at": "2026-11-11T14:03:00Z",
+        "status": "completed",
         "last_checked_at": AT,
         "collected": True,
         "evidence": "item_results",
@@ -133,6 +138,128 @@ def test_one_mutation_cannot_confirm_overlapping_attempts():
     state["attempts"]["a2"] = deepcopy(state["attempts"]["a1"])
     assert not reconstruct(state)[2]
     assert summarize(state)["items"][0]["probable"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_manual_claim_competes_for_mutation_unless_dry_run(dry_run):
+    state = fixture()
+    state["attempts"]["manual"] = deepcopy(state["attempts"]["a1"])
+    state["attempts"]["manual"].update(manual=True, dry_run=dry_run)
+    item = summarize(state)["items"][0]
+    assert item["confirmed"] is dry_run
+    assert item["removal_7"] is (True if dry_run else None)
+    activity = item["activity"][0]["series"]
+    assert ("applied" in activity) is dry_run
+    state["attempts"].pop("a1")
+    item = summarize(state)["items"][0]
+    assert not item["confirmed"]
+    assert item["removal_7"] is None
+    assert item["activity"] == [{"date": "2026-11-11", "series": ["human_changed"]}]
+
+
+def test_cleanup_failure_does_not_erase_application_or_human_followup():
+    state = fixture()
+    parsed = parse_log(
+        "2026-11-11T14:02:47Z [Issue dotnet/machinelearning#7901] "
+        "Label 'area-Infrastructure' applied. "
+        "Error occurred removing default label 'needs-area-label'",
+        "dotnet/machinelearning",
+    )
+    existing = state["attempts"]["a1"]["observations"][0]
+    state["attempts"]["a1"]["observations"] = [
+        {**existing, **observation} for observation in parsed["observations"]
+    ]
+    item = summarize(state)["items"][0]
+    assert item["confirmed"] and item["technical_failure"]
+    assert item["removal_7"] is True
+    assert item["activity"] == [{"date": "2026-11-11", "series": ["applied", "human_changed"]}]
+
+
+@pytest.mark.parametrize("unknown", ["queued", "empty", "unsupported", "unknown_action"])
+@pytest.mark.parametrize("known", ["existing_area_skip", "area_applied", "application_failure"])
+def test_unknown_is_classified_per_automatic_attempt_not_flattened_results(unknown, known):
+    state = fixture()
+    state["attempts"]["a1"]["observations"][0]["outcome"] = known
+    unresolved = deepcopy(state["attempts"]["a1"])
+    if unknown == "empty":
+        unresolved["observations"] = []
+    elif unknown == "unknown_action":
+        unresolved["observations"][0]["action_version"] = None
+    else:
+        unresolved["observations"][0]["outcome"] = unknown
+    state["attempts"]["unresolved"] = unresolved
+    result = summarize(state)
+    assert result["items"][0]["unknown"]
+    assert result["streams"][0]["production_incomplete_runs"] == 1
+    for mode in ("manual", "dry_run"):
+        state["attempts"]["unresolved"] = {**unresolved, mode: True}
+        result = summarize(state)
+        if known == "existing_area_skip":
+            assert not result["items"]
+        else:
+            assert not result["items"][0]["unknown"]
+        assert result["streams"][0]["production_incomplete_runs"] == 0
+
+
+def test_known_item_failure_is_not_unknown_but_unassigned_failed_run_is_incomplete():
+    state = fixture()
+    state["runs"]["run1"]["evidence"] = "technical_failure"
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "application_failure"
+    result = summarize(state)
+    item = result["items"][0]
+    assert item["technical_failure"] and not item["unknown"]
+    assert item["intake_1"] == {"status": "technical_failure", "evidence_complete": True}
+    assert result["streams"][0]["production_incomplete_runs"] == 0
+    state["attempts"].clear()
+    result = summarize(state)
+    item = result["items"][0]
+    assert item["unknown"] and not item["technical_failure"]
+    assert not item["intake_1"]["evidence_complete"]
+    assert result["streams"][0]["production_incomplete_runs"] == 1
+
+
+@pytest.mark.parametrize("scenario", ["unsupported_action", "unsupported_result", "queued_only"])
+def test_unknown_automatic_attempt_keeps_intake_denominator_but_not_completeness(scenario):
+    state = fixture()
+    observation = state["attempts"]["a1"]["observations"][0]
+    if scenario == "unsupported_action":
+        observation["action_version"] = None
+    else:
+        observation["outcome"] = "queued" if scenario == "queued_only" else "unsupported"
+    item = summarize(state)["items"][0]
+    assert item["unknown"]
+    for hours in (1, 24):
+        assert item[f"intake_{hours}"] is not None
+        assert not item[f"intake_{hours}"]["evidence_complete"]
+
+
+@pytest.mark.parametrize("mode", ["no_run", "manual", "dry_run"])
+def test_complete_intake_keeps_no_run_opportunities_and_ignores_nonproduction_unknowns(mode):
+    state = fixture()
+    if mode == "no_run":
+        state["attempts"].clear()
+        state["runs"].clear()
+    else:
+        state["attempts"]["a1"][mode] = True
+        state["attempts"]["a1"]["observations"][0]["outcome"] = "unsupported"
+        state["runs"]["run1"]["evidence"] = "unknown"
+        if mode == "manual":
+            state["runs"]["run1"]["manual"] = True
+        else:
+            state["runs"]["run1"]["branch"] = "main"
+            state["runs"]["run1"]["configs"] = [
+                {
+                    "dry_run": True,
+                    "threshold": None,
+                    "action_sha": None,
+                    "action_version": None,
+                    "cache_hit": None,
+                }
+            ]
+    item = summarize(state)["items"][0]
+    for hours in (1, 24):
+        assert item[f"intake_{hours}"]["status"] == "no_confirmed_application"
+        assert item[f"intake_{hours}"]["evidence_complete"]
 
 
 def test_repeated_application_is_not_another_followup_sample_and_is_reapplication():

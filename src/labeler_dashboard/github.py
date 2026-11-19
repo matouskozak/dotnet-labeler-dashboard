@@ -16,7 +16,9 @@ class APIError(RuntimeError):
 
 
 class BudgetExceeded(RuntimeError):
-    pass
+    def __init__(self, message="", *, rate_limited=False):
+        super().__init__(message)
+        self.rate_limited = rate_limited
 
 
 class GitHub:
@@ -36,7 +38,9 @@ class GitHub:
             if self.used >= min(self.budget, self.limit):
                 raise BudgetExceeded("Request budget reached. Checkpoint remains resumable.")
             if self.remaining is not None and self.remaining <= 50:
-                raise BudgetExceeded("Rate-limit reserve reached. Refresh will resume later.")
+                raise BudgetExceeded(
+                    "Rate-limit reserve reached. Refresh will resume later.", rate_limited=True
+                )
             self.used += 1
             try:
                 response = self.session.get(
@@ -67,7 +71,7 @@ class GitHub:
                 # Defer long waits to the next hourly run rather than hammering the API.
                 delay = float(response.headers.get("Retry-After", 60))
                 if self.remaining == 0 or delay > 60 or retry == 2:
-                    raise BudgetExceeded("GitHub rate limit. Refresh deferred.")
+                    raise BudgetExceeded("GitHub rate limit. Refresh deferred.", rate_limited=True)
                 self.sleep(max(delay, 1))
                 continue
             if status >= 500 and retry < 2:

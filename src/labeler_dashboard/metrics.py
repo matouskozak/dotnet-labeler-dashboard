@@ -1,11 +1,101 @@
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import timedelta
 
-from .store import instant, stamp, stream_key
+from .evidence import PARSER_VERSION
+from .store import instant, pending_timeline, stamp, stream_key
 
 
 def production(attempt):
     return not attempt["manual"] and not attempt["dry_run"]
+
+
+def supported_terminal_evidence(attempt):
+    results = [row for row in attempt["observations"] if row["outcome"] != "queued"]
+    return (
+        attempt.get("parser_version", PARSER_VERSION) == PARSER_VERSION
+        and bool(results)
+        and all(
+            row["action_version"]
+            and row["outcome"]
+            in {
+                "area_applied",
+                "fallback_applied",
+                "fallback_present",
+                "existing_area_skip",
+                "fallback_removed",
+                "no_selection",
+                "application_failure",
+            }
+            for row in results
+        )
+    )
+
+
+def automatic_run(run):
+    configs = run.get("configs", [])
+    return not run.get("manual", False) and not (
+        configs and all(config.get("dry_run") is True for config in configs)
+    )
+
+
+def execution_bounds(run):
+    # created_at/updated_at only bound an unknown execution, never identify its day.
+    start = run.get("started_at") or run.get("created_at")
+    end = run.get("completed_at")
+    if not end and (run.get("status") == "completed" or run.get("collected")):
+        end = run.get("updated_at")
+    return start or "", end or "~"
+
+
+def execution_overlaps(run, lower, upper):
+    start, end = execution_bounds(run)
+    return start < upper and end >= lower
+
+
+class ExecutionIntervals:
+    """Merged closed execution intervals queried against half-open reporting windows."""
+
+    def __init__(self, runs):
+        self.starts = []
+        self.ends = []
+        for start, end in sorted(execution_bounds(run) for run in runs):
+            if self.ends and start <= self.ends[-1]:
+                self.ends[-1] = max(self.ends[-1], end)
+            else:
+                self.starts.append(start)
+                self.ends.append(end)
+
+    def overlaps(self, lower, upper):
+        index = bisect_left(self.starts, upper) - 1
+        return index >= 0 and self.ends[index] >= lower
+
+
+def intake_run_unresolved(run):
+    return automatic_run(run) and (
+        not run["collected"]
+        or run["evidence"] in {"unknown", "unavailable", "parser_upgrade_pending"}
+        or (
+            run["evidence"] == "technical_failure"
+            and not run.get("has_terminal_item_evidence", False)
+        )
+    )
+
+
+def daily_run_unresolved(run):
+    return automatic_run(run) and (
+        not run["collected"]
+        or run["evidence"] not in {"item_results", "no_work"}
+        or any(not config["action_version"] for config in run.get("configs", []))
+    )
+
+
+def attempt_overlaps(attempt, run, lower, upper):
+    starts = [row["step_start"] for row in attempt["observations"] if row.get("step_start")]
+    ends = [row["step_end"] for row in attempt["observations"] if row.get("step_end")]
+    if starts and ends:
+        return min(starts) < upper and max(ends) >= lower
+    return execution_overlaps(run, lower, upper)
 
 
 def only_existing_area_skips(attempts):
@@ -38,16 +128,19 @@ def reconstruct(state):
     candidates = {}
     claims = defaultdict(list)
     observations = {}
+    automatic = set()
     for item_key, rows in attempts.items():
         through = state["items"][item_key].get("observed_through")
         for attempt in rows:
-            if not production(attempt):
+            if attempt["dry_run"]:
                 continue
             for index, row in enumerate(attempt["observations"]):
                 if row["outcome"] not in {"area_applied", "fallback_applied"}:
                     continue
                 identity = (attempt["key"], index)
                 observations[identity] = {**row, "run": attempt["run"], "item": item_key}
+                if production(attempt):
+                    automatic.add(identity)
                 if (
                     not row["action_version"]
                     or not row["step_start"]
@@ -71,7 +164,7 @@ def reconstruct(state):
                     claims[event_key].append(identity)
     confirmed = {}
     for identity, matching in candidates.items():
-        if len(matching) == 1 and len(claims[matching[0]]) == 1:
+        if identity in automatic and len(matching) == 1 and len(claims[matching[0]]) == 1:
             confirmed[matching[0]] = observations[identity]
     return events, attempts, confirmed
 
@@ -144,21 +237,26 @@ def label_changes(item_key, events):
     return rows
 
 
-def intake_view(item, events, attempts, applications, progress, stream_runs, now, hours):
+def intake_view(item, events, attempts, applications, progress, run_gaps, run_lookup, now, hours):
     deadline = instant(item["created_at"]) + timedelta(hours=hours)
     if now < deadline:
         return None
     end = stamp(deadline)
+    upper = stamp(deadline + timedelta(seconds=1))
     covered = progress.get("backfill_to", "") >= end or (
         progress.get("live_from", "~") <= item["created_at"] and progress.get("live_to", "") >= end
     )
     complete = bool(
         covered
-        and item.get("observed_through", "") >= end
+        and (item.get("observed_through") or "") >= end
+        and not run_gaps.overlaps(item["created_at"], upper)
         and not any(
-            item["created_at"] <= run["created_at"] <= end
-            and (not run["collected"] or run["evidence"] in {"unknown", "unavailable"})
-            for run in stream_runs
+            production(attempt)
+            and attempt_overlaps(
+                attempt, run_lookup.get(attempt["run"], {}), item["created_at"], upper
+            )
+            and not supported_terminal_evidence(attempt)
+            for attempt in attempts
         )
     )
     applied = any(item["created_at"] <= row["at"] <= end for row in applications)
@@ -227,7 +325,8 @@ def daily_coverage(state, stream, items, runs, now):
     day = start.replace(hour=0, minute=0, second=0, microsecond=0)
     progress = state["streams"].get(stream_key(stream["repo"], stream["kind"]), {})
     intake = state["repositories"].get(stream["repo"], {})
-    unknown_dates = set()
+    run_gaps = ExecutionIntervals(run for run in runs if daily_run_unresolved(run))
+    unresolved_attempts = []
     for attempt in state["attempts"].values():
         run = state["runs"].get(attempt["run"], {})
         if not production(attempt) or (run.get("repo"), run.get("kind")) != (
@@ -235,12 +334,8 @@ def daily_coverage(state, stream, items, runs, now):
             stream["kind"],
         ):
             continue
-        results = [row for row in attempt["observations"] if row["outcome"] != "queued"]
-        if not results or any(
-            not row["action_version"] or row["outcome"] in {"unknown", "unsupported"}
-            for row in results
-        ):
-            unknown_dates.update(row["at"][:10] for row in attempt["observations"])
+        if not supported_terminal_evidence(attempt):
+            unresolved_attempts.append((attempt, run))
     coverage = []
     while day <= now:
         end = day + timedelta(days=1)
@@ -252,21 +347,15 @@ def daily_coverage(state, stream, items, runs, now):
             intake.get("intake_complete")
             and (intake.get("updated_checkpoint") or "") >= upper
             and run_window_complete
-            and lower[:10] not in unknown_dates
+            and not any(
+                attempt_overlaps(attempt, run, lower, upper) for attempt, run in unresolved_attempts
+            )
             and all(
                 (item.get("observed_through") or "") >= upper
                 for item in items
                 if item["created_at"] < upper
             )
-            and not any(
-                lower <= run["created_at"] < upper
-                and (
-                    not run["collected"]
-                    or run["evidence"] not in {"item_results", "no_work"}
-                    or any(not config["action_version"] for config in run.get("configs", []))
-                )
-                for run in runs
-            )
+            and not run_gaps.overlaps(lower, upper)
         )
         coverage.append({"date": lower[:10], "complete": complete})
         day = end
@@ -294,8 +383,30 @@ def report(state, config, now):
         ],
     }
     runs_by_stream = defaultdict(list)
-    for run in state["runs"].values():
-        runs_by_stream[stream_key(run["repo"], run["kind"])].append(run)
+    terminal_runs, unresolved_attempt_runs = set(), set()
+    for attempt in state["attempts"].values():
+        if production(attempt):
+            target = (
+                terminal_runs if supported_terminal_evidence(attempt) else unresolved_attempt_runs
+            )
+            target.add(attempt["run"])
+    for key, run in state["runs"].items():
+        runs_by_stream[stream_key(run["repo"], run["kind"])].append(
+            {
+                **run,
+                "key": key,
+                "has_terminal_item_evidence": key in terminal_runs,
+            }
+        )
+    unresolved_by_stream = {
+        stream_key(stream["repo"], stream["kind"]): [
+            run
+            for run in runs_by_stream[stream_key(stream["repo"], stream["kind"])]
+            if intake_run_unresolved(run)
+        ]
+        for stream in config["streams"]
+    }
+    intake_gaps = {key: ExecutionIntervals(runs) for key, runs in unresolved_by_stream.items()}
     for key, item in state["items"].items():
         item_events = events[key]
         item_attempts = attempts[key]
@@ -358,11 +469,8 @@ def report(state, config, now):
                 observation["outcome"] == "application_failure" for observation in observed
             ),
             "unknown": bool(item.get("timeline_availability"))
-            or not observed
-            or any(
-                not observation["action_version"] or observation["outcome"] == "unsupported"
-                for observation in observed
-            ),
+            or not production_attempts
+            or any(not supported_terminal_evidence(attempt) for attempt in production_attempts),
             "needs_area": not any(label.startswith("area-") for label in item["labels"]),
             "fallback_marker": "needs-area-label" in item["labels"],
             "timeline_unavailable": bool(item.get("timeline_availability")),
@@ -379,7 +487,8 @@ def report(state, config, now):
                 item_attempts,
                 applications,
                 progress,
-                runs_by_stream[key_stream],
+                intake_gaps[key_stream],
+                state["runs"],
                 now,
                 hours,
             )
@@ -405,12 +514,10 @@ def report(state, config, now):
                 "feed_gap": repo_progress.get("feed_gap", False),
                 "items": len(items),
                 "timelines": sum(bool(item["observed_through"]) for item in items),
-                "pending_timelines": sum(
-                    not item.get("observed_through")
-                    or item.get("timeline_source_updated") != item.get("updated_at")
-                    or bool(item.get("timeline_error"))
-                    or item.get("reconcile_requested", False)
-                    for item in source_items
+                "pending_timelines": sum(pending_timeline(item) for item in source_items),
+                "production_incomplete_runs": len(
+                    {run["key"] for run in unresolved_by_stream[key]}
+                    | {run["key"] for run in stream_runs if run["key"] in unresolved_attempt_runs}
                 ),
                 "daily_coverage": daily_coverage(state, stream, source_items, stream_runs, now),
                 "run_attempts": len(stream_runs),

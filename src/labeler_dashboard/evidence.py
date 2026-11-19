@@ -10,6 +10,7 @@ SUPPORTED_ACTIONS = {
 PRODUCTION_EVENTS = {"issues", "pull_request", "pull_request_target", "schedule"}
 LINE = re.compile(r"^(\d{4}-\d\d-\d\dT[\d:.]+Z) (.*)$")
 RESULT = re.compile(r"^\[(Issue|Pull Request) ([\w.-]+/[\w.-]+)#(\d+)] (.+)$")
+PARSER_VERSION = 3
 
 
 def parse_log(text: str, repo: str) -> dict:
@@ -92,22 +93,27 @@ def parse_log(text: str, repo: str) -> dict:
             ("dry_run", r"(?:^| )(?:Label|Default label) '([^']+)' would be applied\."),
             ("fallback_removed", r"Default label '(needs-area-label)' removed\."),
         )
-        if body == "Queued for prediction.":
-            observation["outcome"] = "queued"
-        elif "Error occurred " in body:
-            observation["outcome"] = "application_failure"
-        else:
-            for outcome, pattern in patterns:
-                found = re.search(pattern, body)
+        # Supported predictor failures terminate the result. Error details are not results.
+        success, error, _ = body.partition("Error occurred ")
+        matches = []
+        for outcome, pattern in patterns:
+            for found in re.finditer(pattern, success):
                 if found and relevant_label(found[1]) and len(found[1]) <= 100:
-                    observation.update(outcome=outcome, label=found[1])
-                    break
-            if observation["outcome"] == "unsupported":
-                if body == "No prediction made. No applicable label found. No action taken.":
-                    observation["outcome"] = "no_selection"
-                elif body.startswith("No prediction was made. The prediction engine"):
-                    observation["outcome"] = "no_selection"
-        result["observations"].append(observation)
+                    matches.append((found.start(), outcome, found[1]))
+        for _, outcome, label in sorted(matches):
+            result["observations"].append({**observation, "outcome": outcome, "label": label})
+        if error:
+            result["observations"].append({**observation, "outcome": "application_failure"})
+            result["explicit_failure"] = True
+        elif not matches:
+            if body == "Queued for prediction.":
+                observation["outcome"] = "queued"
+            elif (
+                body == "No prediction made. No applicable label found. No action taken."
+                or body.startswith("No prediction was made. The prediction engine")
+            ):
+                observation["outcome"] = "no_selection"
+            result["observations"].append(observation)
     result["threshold"] = next(iter(thresholds)) if len(thresholds) == 1 else None
     result["dry_run"] = next(iter(dry_runs)) if len(dry_runs) == 1 else None
     return result

@@ -195,3 +195,79 @@ def test_daily_plot_filters_deduplicates_and_distinguishes_partial_days(site, br
         assert page.locator("#trend svg").get_attribute("role") == "img"
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
+@pytest.mark.parametrize("production_gap", [False, True])
+def test_manual_and_dry_run_unknowns_only_affect_operational_counts(site, browser, production_gap):
+    output, url, _ = site
+    state = fixture()
+    now = instant("2026-11-19T12:00:00Z")
+    state["data_as_of"] = "2026-11-19T12:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": "2026-11-19T12:00:00Z",
+    }
+    for key in ("manual_cancelled", "manual_unsupported", "dry_run"):
+        state["runs"][key] = {
+            **state["runs"]["run1"],
+            "manual": key != "dry_run",
+            "evidence": "unknown",
+            "conclusion": "cancelled" if key == "manual_cancelled" else "success",
+            "branch": "main",
+            "configs": [
+                {
+                    "dry_run": key == "dry_run",
+                    "action_version": None,
+                    "threshold": None,
+                    "action_sha": None,
+                    "cache_hit": None,
+                }
+            ],
+        }
+    if production_gap:
+        state["runs"]["unresolved_auto"] = {
+            **state["runs"]["run1"],
+            "evidence": "unknown",
+        }
+    render(state, CONFIG, now, output)
+    payload = json.loads((output / "data-v2.json").read_text())
+    assert payload["streams"][0]["production_incomplete_runs"] == int(production_gap)
+    assert payload["streams"][0]["run_evidence"]["unknown"] == 3 + int(production_gap)
+    with browser.new_page() as page:
+        page.clock.install(time=now)
+        page.goto(url, wait_until="networkidle")
+        assert page.locator("#streams .badge").first.inner_text() == (
+            "PARTIAL" if production_gap else "COLLECTED"
+        )
+        assert (
+            "History is incomplete" in page.locator("#freshness").inner_text()
+        ) is production_gap
+        page.get_by_text("Details", exact=True).click()
+        assert (
+            f"{4 + int(production_gap)} collected workflow run attempts"
+            in page.locator("#operations").inner_text()
+        )
+        assert f"unknown {3 + int(production_gap)}" in page.locator("#operations").inner_text()
+
+
+def test_unverified_preflight_is_not_displayed_as_permission_denial(site, browser):
+    output, url, _ = site
+    payload = json.loads((output / "data-v2.json").read_text())
+    payload["permissions"] = {
+        "dotnet/runtime": {
+            "checked_at": payload["built_at"],
+            "checks": {
+                "logs": {
+                    "ok": False,
+                    "state": "unverified",
+                    "reason": "No readable log sample found",
+                }
+            },
+        }
+    }
+    (output / "data-v2.json").write_text(json.dumps(payload))
+    with browser.new_page() as page:
+        page.goto(url, wait_until="networkidle")
+        assert "unverified" in page.locator("#freshness").inner_text()
+        assert "failed" not in page.locator("#freshness").inner_text()
+        assert page.locator("#freshness").get_attribute("class") == "notice warning"

@@ -1,18 +1,17 @@
 from collections import defaultdict
 from datetime import timedelta
 
-from .evidence import PRODUCTION_EVENTS, outcome, parse_log, prediction_step
+from .evidence import PARSER_VERSION, PRODUCTION_EVENTS, outcome, parse_log, prediction_step
 from .github import APIError, BudgetExceeded
 from .store import (
     instant,
+    pending_timeline,
     record_error,
     relevant_label,
     safe_github_url,
     stamp,
     stream_key,
 )
-
-PARSER_VERSION = 2
 
 
 class Collector:
@@ -53,7 +52,7 @@ class Collector:
                 },
             )
         for run in self.state["runs"].values():
-            if run.get("parser_version") != PARSER_VERSION and run["evidence"] == "no_work":
+            if run.get("parser_version") != PARSER_VERSION and run["evidence"] != "unavailable":
                 run["evidence"] = "parser_upgrade_pending"
 
     def preflight(self, repo):
@@ -74,28 +73,20 @@ class Collector:
                 "runs",
                 lambda: self.api.get(
                     f"/repos/{repo}/actions/workflows/{workflow}/runs",
-                    {"status": "completed", "per_page": 1},
+                    {"status": "completed", "per_page": 5},
                 ),
             ),
-            (
-                "jobs",
-                lambda: self.api.get(
-                    f"/repos/{repo}/actions/runs/{latest_run['id']}/jobs", {"per_page": 100}
-                ),
-            ),
-            ("logs", lambda: self.api.log(repo, latest_jobs["jobs"][0]["id"])),
         )
         latest_item = []
-        latest_run = {}
-        latest_jobs = {}
+        runs = []
         workflow = next(s["workflow_id"] for s in self.enabled if s["repo"] == repo)
         for name, operation in operations:
-            if (
-                (name == "timeline" and not latest_item)
-                or (name == "jobs" and not latest_run)
-                or (name == "logs" and not latest_jobs.get("jobs"))
-            ):
-                checks[name] = {"ok": False, "reason": "No recent sample to verify permission"}
+            if name == "timeline" and not latest_item:
+                checks[name] = {
+                    "ok": False,
+                    "state": "unverified",
+                    "reason": "No item sample to verify access",
+                }
                 continue
             try:
                 data = operation()
@@ -103,13 +94,77 @@ class Collector:
                 if name == "issues":
                     latest_item = data
                 elif name == "runs":
-                    latest_run = next(iter(data["workflow_runs"]), {})
-                elif name == "jobs":
-                    latest_jobs = data
+                    runs = data["workflow_runs"]
             except APIError as error:
-                checks[name] = {"ok": False, "status": error.status, "reason": str(error)}
+                checks[name] = {
+                    "ok": False,
+                    "state": "denied" if error.status in {401, 403} else "failed",
+                    "status": error.status,
+                    "reason": str(error),
+                }
                 self.error(f"{repo}/preflight/{name}", error)
+        checks["jobs"] = {
+            "ok": False,
+            "state": "unverified",
+            "reason": "No eligible job sample to verify access",
+        }
+        checks["logs"] = {
+            "ok": False,
+            "state": "unverified",
+            "reason": "No readable log sample found",
+        }
+        eligible = [
+            run
+            for run in runs
+            if run.get("conclusion") not in {"skipped", "cancelled"}
+            and instant(run["updated_at"]) <= self.now - timedelta(minutes=5)
+        ]
+        for run in eligible[:3]:
+            endpoint = "jobs"
+            try:
+                jobs = self.api.get(
+                    f"/repos/{repo}/actions/runs/{run['id']}/jobs", {"per_page": 100}
+                )["jobs"]
+                checks["jobs"] = {"ok": True}
+                executed = [
+                    job
+                    for job in jobs
+                    if job.get("status") == "completed"
+                    and job.get("conclusion") not in {"skipped", "cancelled"}
+                    and any(
+                        step.get("conclusion") not in {None, "skipped"}
+                        for step in job.get("steps", [])
+                    )
+                ]
+                endpoint = "logs"
+                for job in executed[:2]:
+                    try:
+                        self.api.log(repo, job["id"])
+                    except APIError as error:
+                        if error.status in {404, 410}:
+                            continue
+                        raise
+                    checks["logs"] = {"ok": True}
+                    return checks
+            except APIError as error:
+                if error.status in {404, 410}:
+                    continue
+                checks[endpoint] = {
+                    "ok": False,
+                    "state": "denied" if error.status in {401, 403} else "failed",
+                    "status": error.status,
+                    "reason": str(error),
+                }
+                self.error(f"{repo}/preflight/{endpoint}", error)
+                break
         return checks
+
+    def can_collect_runs(self, repo):
+        checks = self.state["permissions"].get(repo, {}).get("checks", {})
+        return checks.get("runs", {}).get("ok") and all(
+            checks.get(name, {}).get("ok") or checks.get(name, {}).get("state") == "unverified"
+            for name in ("jobs", "logs")
+        )
 
     def retain_item(self, repo, source):
         kind = "pr" if "pull_request" in source else "issue"
@@ -291,6 +346,9 @@ class Collector:
                 "attempt": attempt,
                 "created_at": raw["created_at"],
                 "updated_at": raw["updated_at"],
+                "started_at": raw.get("run_started_at"),
+                "completed_at": None,
+                "status": raw["status"],
                 "branch": raw.get("head_branch"),
                 "event": raw["event"],
                 "conclusion": raw.get("conclusion"),
@@ -311,6 +369,12 @@ class Collector:
                 f"/repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs", field="jobs"
             ):
                 jobs.extend(page)
+            starts = [job["started_at"] for job in jobs if job.get("started_at")]
+            ends = [job["completed_at"] for job in jobs if job.get("completed_at")]
+            if starts and not run["started_at"]:
+                run["started_at"] = min(starts)
+            if jobs and len(ends) == len(jobs):
+                run["completed_at"] = max(ends)
             by_item = defaultdict(list)
             configs = []
             failure_phases = set()
@@ -416,6 +480,67 @@ class Collector:
             complete = complete and run["collected"]
         return complete
 
+    def audit_runs(self):
+        # A failed lookup rotates independently of the last successful evidence fetch.
+        roots = {}
+        urgency = {}
+        for run in self.state["runs"].values():
+            identity = (run["repo"], run["id"])
+            priority = (
+                0
+                if not run.get("collected")
+                else 1
+                if run.get("parser_version") != PARSER_VERSION
+                else 2
+            )
+            urgency[identity] = min(urgency.get(identity, 2), priority)
+            if identity not in roots or run["attempt"] > roots[identity]["attempt"]:
+                roots[identity] = run
+        due = []
+        for run in roots.values():
+            audit = (
+                self.state["repositories"][run["repo"]]
+                .setdefault("run_audits", {})
+                .get(str(run["id"]), {})
+            )
+            if audit.get("retry_at") and instant(audit["retry_at"]) > self.now:
+                continue
+            last_attempt = audit.get("last_attempted_at", run["last_checked_at"])
+            priority = urgency[run["repo"], run["id"]]
+            if priority == 2 and (self.now - instant(last_attempt) < timedelta(hours=6)):
+                continue
+            if self.can_collect_runs(run["repo"]):
+                due.append((run, audit, last_attempt, priority))
+        due.sort(key=lambda row: (row[3], row[2]))
+        for run, previous, _, _ in due[:5]:
+            audits = self.state["repositories"][run["repo"]]["run_audits"]
+            audit = {**previous}
+            stream = next(
+                s for s in self.enabled if s["repo"] == run["repo"] and s["kind"] == run["kind"]
+            )
+            try:
+                source = self.api.get(f"/repos/{run['repo']}/actions/runs/{run['id']}")
+                audit["last_attempted_at"] = self.at
+                audits[str(run["id"])] = audit
+                if self.collect_run(stream, source):
+                    audit.update(last_success_at=self.at, failures=0, retry_at=None)
+                    audit.pop("last_error", None)
+            except APIError as error:
+                failures = previous.get("failures", 0) + 1
+                audit.update(
+                    last_attempted_at=self.at,
+                    failures=failures,
+                    retry_at=stamp(
+                        self.now + timedelta(hours=min(168, 6 * 2 ** min(failures - 1, 5)))
+                    ),
+                    last_error=str(error),
+                )
+                audits[str(run["id"])] = audit
+                self.error(f"{run['repo']}/rerun-audit", error)
+            except BudgetExceeded:
+                self.state["budget_paused"] = True
+                break
+
     def run_window(self, stream, field, end):
         progress = self.state["streams"][stream_key(stream["repo"], stream["kind"])]
         checkpoint = instant(progress[field])
@@ -457,24 +582,34 @@ class Collector:
         items = sorted(
             self.state["items"].items(),
             key=lambda row: (
-                not row[1].get("reconcile_requested", False),
-                row[1].get("observed_through", ""),
+                not pending_timeline(row[1]),
+                row[1].get("observed_through") or "",
                 row[0],
             ),
         )
-        for key, item in items:
+        for index, (key, item) in enumerate(items):
             if (
                 item.get("observed_through") == self.at
                 and item.get("timeline_source_updated") == item["updated_at"]
             ):
                 continue
+            used_before = self.api.used
             try:
                 self.reconcile(key, item)
             except APIError as error:
                 item["timeline_error"] = str(error)
                 self.error(f"{item['repo']}/timeline/{item['number']}", error)
-            except BudgetExceeded:
-                self.state["budget_paused"] = True
+            except BudgetExceeded as error:
+                reservation_only = (
+                    not error.rate_limited
+                    and self.api.limit < self.api.budget
+                    and self.api.used >= self.api.limit
+                    and self.api.used < self.api.budget
+                )
+                if self.api.used > used_before:
+                    item["reconcile_requested"] = True
+                if not reservation_only or any(pending_timeline(row) for _, row in items[index:]):
+                    self.state["budget_paused"] = True
                 break
 
         self.api.limit = self.api.budget
@@ -484,10 +619,9 @@ class Collector:
         for stream in self.enabled:
             key = stream_key(stream["repo"], stream["kind"])
             progress = self.state["streams"][key]
-            checks = self.state["permissions"].get(stream["repo"], {}).get("checks", {})
-            if not all(checks.get(name, {}).get("ok") for name in ("runs", "jobs", "logs")):
+            if not self.can_collect_runs(stream["repo"]):
                 progress["last_error"] = (
-                    "Source-read preflight incomplete. See operations for required credential."
+                    "Source access failed. See operations for endpoint details."
                 )
                 continue
             self.api.limit = min(self.api.budget - 15, self.api.used + share)
@@ -507,36 +641,7 @@ class Collector:
 
         # Reruns keep created_at. Rotate a separate audit across known run identities.
         self.api.limit = self.api.budget
-        roots = {}
-        for run in self.state["runs"].values():
-            identity = (run["repo"], run["id"])
-            if identity not in roots or run["attempt"] > roots[identity]["attempt"]:
-                roots[identity] = run
-        for run in sorted(
-            roots.values(),
-            key=lambda row: (
-                row.get("parser_version") == PARSER_VERSION,
-                row["last_checked_at"],
-            ),
-        )[:5]:
-            if run.get("parser_version") == PARSER_VERSION and self.now - instant(
-                run["last_checked_at"]
-            ) < timedelta(hours=6):
-                continue
-            checks = self.state["permissions"].get(run["repo"], {}).get("checks", {})
-            if not checks.get("logs", {}).get("ok"):
-                continue
-            stream = next(
-                s for s in self.enabled if s["repo"] == run["repo"] and s["kind"] == run["kind"]
-            )
-            try:
-                source = self.api.get(f"/repos/{run['repo']}/actions/runs/{run['id']}")
-                self.collect_run(stream, source)
-            except APIError as error:
-                self.error(f"{run['repo']}/rerun-audit", error)
-            except BudgetExceeded:
-                self.state["budget_paused"] = True
-                break
+        self.audit_runs()
         checkpoints = [
             self.state["repositories"][repo].get("updated_checkpoint") for repo in self.repos
         ] + [

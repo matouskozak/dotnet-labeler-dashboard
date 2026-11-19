@@ -69,6 +69,15 @@ def stream_key(repo: str, kind: str) -> str:
     return f"{repo}:{kind}"
 
 
+def pending_timeline(item):
+    return bool(
+        not item.get("observed_through")
+        or item.get("timeline_source_updated") != item.get("updated_at")
+        or item.get("timeline_error")
+        or item.get("reconcile_requested", False)
+    )
+
+
 def safe_github_url(value: str | None, repo: str, resource: str) -> str | None:
     import re
 

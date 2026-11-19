@@ -1,5 +1,6 @@
 from copy import deepcopy
 
+import pytest
 from test_metrics import CONFIG, KEY, fixture, summarize
 
 from labeler_dashboard.metrics import daily_coverage, reconstruct, report
@@ -140,3 +141,74 @@ def test_plot_observations_do_not_change_model_confirmation():
     summarize(state)
     assert state == before
     assert reconstruct(state)[2] == confirmed
+
+
+@pytest.mark.parametrize("evidence", ["pending", "unavailable", "unknown"])
+def test_unresolved_rerun_affects_execution_day_not_original_created_day(evidence):
+    state = fixture()
+    state["cohort_start"] = "2026-11-10T00:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": "2026-11-19T12:00:00Z",
+    }
+    state["runs"]["rerun"] = {
+        **state["runs"]["run1"],
+        "attempt": 2,
+        "evidence": evidence,
+        "started_at": "2026-11-18T12:00:00Z",
+        "updated_at": "2026-11-18T12:05:00Z",
+        "completed_at": None if evidence == "pending" else "2026-11-18T12:05:00Z",
+        "status": "in_progress" if evidence == "pending" else "completed",
+        "collected": evidence != "pending",
+    }
+    rows = summarize(state)["streams"][0]["daily_coverage"]
+    days = {row["date"]: row["complete"] for row in rows}
+    assert days["2026-11-11"]
+    assert days["2026-11-17"]
+    assert not days["2026-11-18"]
+    # Older snapshots lack attempt timing. Unknown execution stays conservative.
+    state["runs"]["rerun"]["started_at"] = None
+    state["runs"]["rerun"]["completed_at"] = None
+    days = {r["date"]: r["complete"] for r in summarize(state)["streams"][0]["daily_coverage"]}
+    assert not days["2026-11-11"]
+    assert not days["2026-11-18"]
+    assert days["2026-11-10"]
+
+
+def test_rerun_with_no_item_observations_also_leaves_new_item_intake_incomplete():
+    state = fixture()
+    state["items"][KEY]["created_at"] = "2026-11-18T12:00:00Z"
+    state["events"].clear()
+    state["attempts"].clear()
+    state["runs"]["run1"].update(
+        attempt=2,
+        evidence="unavailable",
+        started_at="2026-11-18T12:01:00Z",
+        completed_at="2026-11-18T12:05:00Z",
+        updated_at="2026-11-18T12:05:00Z",
+    )
+    item = summarize(state)["items"][0]
+    assert item["intake_1"] == {
+        "status": "no_confirmed_application",
+        "evidence_complete": False,
+    }
+
+
+def test_unresolved_attempt_spanning_midnight_keeps_both_execution_days_partial():
+    state = fixture()
+    state["cohort_start"] = "2026-11-10T00:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": "2026-11-19T12:00:00Z",
+    }
+    state["runs"]["run1"].update(
+        evidence="unknown",
+        started_at="2026-11-17T23:59:50Z",
+        completed_at="2026-11-18T00:01:00Z",
+        updated_at="2026-11-18T00:01:00Z",
+    )
+    state["attempts"].clear()
+    days = {r["date"]: r["complete"] for r in summarize(state)["streams"][0]["daily_coverage"]}
+    assert days["2026-11-16"]
+    assert not days["2026-11-17"]
+    assert not days["2026-11-18"]

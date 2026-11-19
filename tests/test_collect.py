@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from labeler_dashboard.collect import Collector
+from labeler_dashboard.collect import PARSER_VERSION, Collector
 from labeler_dashboard.github import APIError, BudgetExceeded
 from labeler_dashboard.store import empty_state, instant, load, save, stamp
 
@@ -303,7 +303,7 @@ def test_old_parser_records_are_reparsed_instead_of_skipped():
     )
     c.collect_run(CONFIG["streams"][0], source_run())
     run = c.state["runs"]["dotnet/runtime:12:1"]
-    assert run["parser_version"] == 2
+    assert run["parser_version"] == PARSER_VERSION
     assert run["configs"][0]["action_version"] == "v2.2.0"
     assert run["configs"][0]["threshold"] == 0.05
 
@@ -352,16 +352,370 @@ def test_unhealthy_source_does_not_turn_missing_items_into_tombstones():
     assert "timeline_availability" not in item
 
 
-def test_preflight_log_authorization_failure_is_visible():
+def probe_job(identity=77, **overrides):
+    return {
+        "id": identity,
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [{"name": "Predict issue labels", "conclusion": "success"}],
+        **overrides,
+    }
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_preflight_log_authorization_failure_is_visible(status):
     c = collector()
     c.api.get.side_effect = [
         [source_item()],
         [],
         {"workflow_runs": [source_run()]},
-        {"jobs": [{"id": 77}]},
+        {"jobs": [probe_job()]},
     ]
-    c.api.log.side_effect = APIError("/repos/dotnet/runtime/actions/jobs/77/logs", 403)
+    c.api.log.side_effect = APIError("/repos/dotnet/runtime/actions/jobs/77/logs", status)
     checks = c.preflight("dotnet/runtime")
     assert checks["issues"]["ok"] and checks["timeline"]["ok"]
-    assert checks["logs"]["status"] == 403
+    assert checks["logs"]["status"] == status
+    assert checks["logs"]["state"] == ("denied" if status in {401, 403} else "failed")
+    assert not c.can_collect_runs("dotnet/runtime")
     assert c.failed and c.state["errors"]
+
+
+def test_stale_compound_failure_is_reparsed_with_success_and_failure_preserved():
+    c = collector()
+    c.state["runs"]["dotnet/runtime:12:1"] = {
+        "parser_version": PARSER_VERSION - 1,
+        "collected": True,
+        "evidence": "item_results",
+    }
+    c.initialize()
+    assert c.state["runs"]["dotnet/runtime:12:1"]["evidence"] == "parser_upgrade_pending"
+    c.api.pages.return_value = jobs()
+    c.api.log.return_value = (
+        "2026-11-11T14:02:47Z [Issue dotnet/runtime#1] Label 'area-X' applied. "
+        "Error occurred removing default label 'needs-area-label'"
+    )
+    c.collect_run(CONFIG["streams"][0], source_run())
+    attempt = c.state["attempts"]["dotnet/runtime:12:1:1"]
+    assert attempt["parser_version"] == PARSER_VERSION
+    assert [row["outcome"] for row in attempt["observations"]] == [
+        "area_applied",
+        "application_failure",
+    ]
+    c.collect_run(CONFIG["streams"][0], source_run())
+    assert c.api.log.call_count == 1
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_failed_rerun_audits_rotate_without_overwriting_success_or_starving_sixth_root(status):
+    c = collector()
+    c.state["permissions"]["dotnet/runtime"] = {
+        "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+    }
+    old = "2026-11-11T14:03:00Z"
+    for identity in range(1, 7):
+        c.state["runs"][f"dotnet/runtime:{identity}:1"] = {
+            "repo": "dotnet/runtime",
+            "kind": "issue",
+            "id": identity,
+            "attempt": 1,
+            "last_checked_at": old,
+            "parser_version": PARSER_VERSION,
+            "collected": True,
+            "evidence": "item_results",
+        }
+    before = deepcopy(c.state["runs"])
+    visited = []
+
+    def get(path):
+        identity = int(path.rsplit("/", 1)[1])
+        visited.append(identity)
+        if identity <= 5:
+            raise APIError(path, status)
+        return source_run(2, id=6, event="schedule", run_started_at="2026-11-19T12:30:00Z")
+
+    c.api.get.side_effect = get
+    c.api.pages.return_value = jobs(skipped=True)
+    c.audit_runs()
+    assert visited == [1, 2, 3, 4, 5]
+    audits = c.state["repositories"]["dotnet/runtime"]["run_audits"]
+    for identity in range(1, 6):
+        assert audits[str(identity)]["last_attempted_at"] == c.at
+        assert "last_success_at" not in audits[str(identity)]
+        assert audits[str(identity)]["retry_at"] == "2026-11-19T18:00:00Z"
+        assert (
+            c.state["runs"][f"dotnet/runtime:{identity}:1"]
+            == before[f"dotnet/runtime:{identity}:1"]
+        )
+    c.now = instant("2026-11-19T13:00:00Z")
+    c.at = stamp(c.now)
+    c.audit_runs()
+    assert visited == [1, 2, 3, 4, 5, 6]
+    assert "dotnet/runtime:6:2" in c.state["runs"]
+    assert audits["6"]["last_success_at"] == c.at
+    assert len(c.state["errors"]) == 5
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_rerun_execution_start_is_not_the_original_created_date(pending):
+    c = collector()
+    c.api.get.return_value = source_run()
+    job_rows = jobs()
+    job_rows[0][0].update(
+        started_at="2026-11-18T14:00:00Z",
+        completed_at="2026-11-18T14:05:00Z",
+    )
+    c.api.pages.return_value = job_rows
+    c.api.log.return_value = ""
+    c.collect_run(
+        CONFIG["streams"][0],
+        source_run(
+            2,
+            run_started_at="2026-11-18T14:00:00Z",
+            status="in_progress" if pending else "completed",
+            updated_at="2026-11-18T14:05:00Z",
+        ),
+    )
+    run = c.state["runs"]["dotnet/runtime:12:2"]
+    assert run["created_at"] == "2026-11-11T14:02:30Z"
+    assert run["started_at"] == "2026-11-18T14:00:00Z"
+    assert run["status"] == ("in_progress" if pending else "completed")
+    assert run["completed_at"] == (None if pending else "2026-11-18T14:05:00Z")
+
+
+def test_attempt_timing_falls_back_to_actual_job_times_when_run_start_is_missing():
+    c = collector()
+    job_rows = jobs()
+    job_rows[0][0].update(
+        started_at="2026-11-18T23:59:50Z",
+        completed_at="2026-11-19T00:01:00Z",
+    )
+    c.api.pages.return_value = job_rows
+    c.api.log.side_effect = APIError("/repos/dotnet/runtime/actions/jobs/77/logs", 410)
+    c.collect_run(CONFIG["streams"][0], source_run())
+    run = c.state["runs"]["dotnet/runtime:12:1"]
+    assert run["started_at"] == "2026-11-18T23:59:50Z"
+    assert run["completed_at"] == "2026-11-19T00:01:00Z"
+
+
+def test_preflight_skips_recent_and_unexecuted_samples_then_reads_older_logs():
+    c = collector()
+    c.api.get.side_effect = [
+        [source_item()],
+        [],
+        {
+            "workflow_runs": [
+                source_run(id=1, updated_at="2026-11-19T11:59:00Z"),
+                source_run(id=2),
+                source_run(id=3),
+            ]
+        },
+        {"jobs": [probe_job(21, conclusion="skipped"), probe_job(22, conclusion="cancelled")]},
+        {"jobs": [probe_job(31), probe_job(32)]},
+    ]
+    c.api.log.side_effect = [
+        APIError("/repos/dotnet/runtime/actions/jobs/31/logs", 404),
+        "readable",
+    ]
+    checks = c.preflight("dotnet/runtime")
+    assert all(check["ok"] for check in checks.values())
+    assert [call.args for call in c.api.log.call_args_list] == [
+        ("dotnet/runtime", 31),
+        ("dotnet/runtime", 32),
+    ]
+    assert not c.failed
+
+
+def test_preflight_missing_logs_try_an_older_completed_run():
+    c = collector()
+    c.api.get.side_effect = [
+        [source_item()],
+        [],
+        {"workflow_runs": [source_run(id=1), source_run(id=2)]},
+        {"jobs": [probe_job(11)]},
+        {"jobs": [probe_job(21)]},
+    ]
+    c.api.log.side_effect = [APIError("/repos/dotnet/runtime/actions/jobs/11/logs", 410), "ok"]
+    assert c.preflight("dotnet/runtime")["logs"]["ok"]
+    assert c.api.log.call_count == 2
+
+
+def test_preflight_all_samples_unavailable_stays_unverified_but_metadata_can_progress():
+    c = collector()
+    c.api.get.side_effect = [
+        [source_item()],
+        [],
+        {"workflow_runs": [source_run(id=n) for n in range(5)]},
+        *[{"jobs": [probe_job(n)]} for n in range(3)],
+    ]
+    c.api.log.side_effect = APIError("/repos/dotnet/runtime/actions/jobs/77/logs", 404)
+    checks = c.preflight("dotnet/runtime")
+    assert checks["logs"] == {
+        "ok": False,
+        "state": "unverified",
+        "reason": "No readable log sample found",
+    }
+    assert c.api.log.call_count == 3
+    assert not c.failed
+    assert c.can_collect_runs("dotnet/runtime")
+    c.api.get.side_effect = None
+    c.api.runs_in_window.return_value = [source_run(updated_at="2026-11-19T11:59:00Z")]
+    c.api.pages.return_value = jobs()
+    c.run_window(CONFIG["streams"][0], "live_to", NOW)
+    run = c.state["runs"]["dotnet/runtime:12:1"]
+    assert run["gaps"] == ["logs_not_yet_available"]
+    assert not run["collected"]
+    # Actual run errors are still recorded, not waived by an inconclusive probe.
+    c.api.log.side_effect = APIError("/repos/dotnet/runtime/actions/jobs/77/logs", 403)
+    c.run_window(CONFIG["streams"][0], "live_to", NOW)
+    assert c.failed and c.state["errors"]
+
+
+def test_in_progress_old_created_rerun_is_audited_again_next_hour():
+    c = collector()
+    c.state["permissions"]["dotnet/runtime"] = {
+        "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+    }
+    c.api.pages.return_value = jobs()
+    c.api.log.return_value = ""
+    c.collect_run(CONFIG["streams"][0], source_run())
+    c.api.get.return_value = source_run(2, status="in_progress", run_started_at=c.at)
+    c.now, c.at = instant("2026-11-19T18:00:00Z"), "2026-11-19T18:00:00Z"
+    c.audit_runs()
+    assert not c.state["runs"]["dotnet/runtime:12:2"]["collected"]
+    for identity in range(20, 26):
+        c.state["runs"][f"dotnet/runtime:{identity}:1"] = {
+            **c.state["runs"]["dotnet/runtime:12:1"],
+            "id": identity,
+            "parser_version": PARSER_VERSION - 1,
+            "last_checked_at": "2026-11-11T00:00:00Z",
+        }
+    c.now, c.at = instant("2026-11-19T19:00:00Z"), "2026-11-19T19:00:00Z"
+
+    def get(path):
+        identity = int(path.rsplit("/", 1)[1])
+        return source_run(
+            2 if identity == 12 else 1, id=identity, run_started_at="2026-11-19T18:00:00Z"
+        )
+
+    c.api.get.side_effect = get
+    c.api.get.reset_mock()
+    c.audit_runs()
+    assert c.state["runs"]["dotnet/runtime:12:2"]["collected"]
+    assert c.api.get.call_args_list[0].args[0] == "/repos/dotnet/runtime/actions/runs/12"
+    assert c.api.get.call_count == 5
+
+
+@pytest.mark.parametrize("older_work", ["unfinished", "stale_parser"])
+def test_old_attempt_urgency_is_not_hidden_by_completed_latest_attempt(older_work):
+    c = collector()
+    c.state["permissions"]["dotnet/runtime"] = {
+        "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+    }
+    c.api.get.return_value = source_run()
+    c.api.pages.return_value = jobs()
+    c.api.log.return_value = ""
+    c.collect_run(CONFIG["streams"][0], source_run(2))
+    old = c.state["runs"]["dotnet/runtime:12:1"]
+    if older_work == "unfinished":
+        old["collected"] = False
+    else:
+        old["parser_version"] = PARSER_VERSION - 1
+    c.api.get.side_effect = [source_run(2), source_run()]
+    c.api.get.reset_mock()
+    c.audit_runs()
+    assert c.api.get.call_count == 2
+    assert old is not c.state["runs"]["dotnet/runtime:12:1"]
+    assert c.state["runs"]["dotnet/runtime:12:1"]["collected"]
+    assert c.state["runs"]["dotnet/runtime:12:1"]["parser_version"] == PARSER_VERSION
+
+
+def refresh_with_reconciled_items():
+    c = collector()
+    c.api.budget, c.api.used, c.api.remaining = 900, 0, None
+    c.preflight = Mock()
+    c.intake = Mock()
+    c.event_feed = Mock()
+    for repo in c.repos:
+        c.state["permissions"][repo] = {
+            "checks": {
+                name: {"ok": True} for name in ("issues", "timeline", "runs", "jobs", "logs")
+            },
+        }
+    c.api.runs_in_window.return_value = []
+    for stream in c.state["streams"].values():
+        stream.update(backfill_to="2026-11-19T11:55:00Z", live_to="2026-11-19T11:55:00Z")
+    for number in range(330):
+        c.retain_item("dotnet/runtime", source_item(number))
+        c.state["items"][f"dotnet/runtime:{number + 100}"].update(
+            observed_through="2026-11-12T00:00:00Z",
+            timeline_source_updated="2026-11-11T14:04:00Z",
+        )
+    visited = []
+
+    def pages(path):
+        if c.api.used >= c.api.limit:
+            raise BudgetExceeded("Request budget reached")
+        c.api.used += 1
+        visited.append(path)
+        yield []
+
+    c.api.pages.side_effect = pages
+    return c, visited
+
+
+@pytest.mark.parametrize("pending", ["updated", "error", "requested"])
+def test_changed_timeline_precedes_unchanged_background_and_reservation_is_not_exhaustion(pending):
+    c, visited = refresh_with_reconciled_items()
+    item = c.state["items"]["dotnet/runtime:429"]
+    item["observed_through"] = "2026-11-19T10:00:00Z"
+    if pending == "updated":
+        item["updated_at"] = "2026-11-19T11:00:00Z"
+    elif pending == "error":
+        item["timeline_error"] = "previous fetch failed"
+    else:
+        item["reconcile_requested"] = True
+    c.state["repositories"]["dotnet/runtime"]["feed_gap"] = True
+    c.refresh()
+    assert visited[0] == "/repos/dotnet/runtime/issues/329/timeline"
+    assert item["observed_through"] == c.at
+    assert c.api.used == 315
+    assert not c.state["budget_paused"]
+    c.now, c.at = instant("2026-11-19T13:00:00Z"), "2026-11-19T13:00:00Z"
+    c.api.used = 0
+    visited.clear()
+    c.refresh()
+    assert visited[0] == "/repos/dotnet/runtime/issues/314/timeline"
+    assert not c.state["budget_paused"]
+
+
+def test_pending_work_and_rate_limits_still_mark_budget_pause():
+    c, _ = refresh_with_reconciled_items()
+    for item in c.state["items"].values():
+        item["timeline_error"] = "fetch failed"
+    c.refresh()
+    assert c.state["budget_paused"]
+    c, _ = refresh_with_reconciled_items()
+    c.api.pages.side_effect = BudgetExceeded("GitHub rate limit", rate_limited=True)
+    c.refresh()
+    assert c.state["budget_paused"]
+
+
+def test_interrupted_background_timeline_becomes_pending_instead_of_hiding_partial_fetch():
+    c, _ = refresh_with_reconciled_items()
+
+    def pages(path):
+        c.api.used = c.api.limit
+        yield []
+        raise BudgetExceeded("Request budget reached")
+
+    c.api.pages.side_effect = pages
+    c.refresh()
+    assert c.state["budget_paused"]
+    assert c.state["items"]["dotnet/runtime:100"]["reconcile_requested"]
+
+
+def test_global_budget_exhaustion_remains_visible_without_pending_items():
+    c, _ = refresh_with_reconciled_items()
+    c.api.used = c.api.budget
+    c.refresh()
+    assert c.state["budget_paused"]

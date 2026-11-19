@@ -138,3 +138,37 @@ def test_action_identity_is_not_the_consuming_repository_revision():
             "dotnet/runtime",
         )
         assert parsed["action_version"] == expected
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "Error occurred removing default label 'needs-area-label'",
+        "Error occurred applying label 'area-Third'",
+    ],
+)
+def test_compound_failure_preserves_every_success_before_it(failure):
+    parsed = parse_log(
+        log(
+            "[Issue dotnet/runtime#17] Label 'area-First' applied. "
+            f"Label 'area-Second' applied. {failure}"
+        ),
+        "dotnet/runtime",
+    )
+    assert [(row["outcome"], row["label"]) for row in parsed["observations"]] == [
+        ("area_applied", "area-First"),
+        ("area_applied", "area-Second"),
+        ("application_failure", None),
+    ]
+    assert parsed["explicit_failure"]
+
+
+def test_error_details_cannot_invent_success_observations():
+    parsed = parse_log(
+        log(
+            "[Issue dotnet/runtime#17] Error occurred removing default label "
+            "'needs-area-label': server response: Label 'area-Invented' applied."
+        ),
+        "dotnet/runtime",
+    )
+    assert [row["outcome"] for row in parsed["observations"]] == ["application_failure"]

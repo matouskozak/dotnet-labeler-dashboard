@@ -30,6 +30,9 @@ unique matching `github-actions[bot]` label mutation inside the predictor step.
 Matching uses repository and item number, never titles or the workflow run actor.
 Overlapping attempts cannot both claim one event. The shared bot identity alone
 proves nothing. Unmatched applied results remain unconfirmed.
+Non-dry manual attempts also compete for a mutation, but never count as an
+automatic application. A successful application followed by a cleanup failure
+retains both observations.
 
 Human removal follow-up uses the first confirmed area application per item.
 The 7/30-day denominator requires both elapsed time and a fully fetched timeline
@@ -66,6 +69,10 @@ pre-labeled items are excluded throughout. Incomplete evidence is reported
 separately. Manual and dry-run attempts do not enter production metrics. Waiting
 fallback items remain visible until resolved. A fallback proves no area selection,
 not necessarily an exact below-threshold cause.
+Unsupported or queued-only automatic attempts leave intake evidence incomplete,
+even when another attempt has a known result or the workflow succeeded. Supported
+item application failures remain known failures, not unknown predictions.
+Coverage ignores manual/dry-run-only gaps. Details still lists all workflow runs.
 
 ## Run locally
 
@@ -110,6 +117,12 @@ Interrupted windows retain evidence without advancing their checkpoints.
 Unfinished runs remain pending. A rotating audit of known run identities detects
 reruns with old creation timestamps. Such reruns can remain undiscovered until
 their audit turn, shown in operations.
+Failed run lookups retain their errors and back off independently of successful
+checks, so inaccessible runs do not block later audits. Coverage gaps use actual
+attempt/job execution times where available. Missing execution times leave the
+possible interval incomplete rather than assigning a rerun to its creation day.
+Known unfinished attempts are audited before stale-parser history and routine
+checks, including when a later attempt is already complete.
 
 History is a compact schema-versioned JSON snapshot on the dedicated `data`
 branch. This deliberately simple v1 layout has one atomic file replacement for
@@ -146,6 +159,15 @@ the `LABELER_READ_TOKEN` Actions secret with a read-only fine-grained PAT or
 installation token granting **Actions, Issues, Pull requests, and Metadata read**
 access to `dotnet/runtime` and `dotnet/machinelearning`. No source-write permission
 is requested. Local credentials are never copied into Actions automatically.
+The log probe checks up to three eligible older completed runs and two executed
+jobs per run, with a five-minute completion buffer. Missing samples are reported
+as unverified, not authorization failures. Metadata collection continues in that
+case, and individual run failures remain explicit.
+
+Changed or failed timelines are reconciled before unchanged background items.
+The background request reservation alone is not reported as budget exhaustion
+when no pending reconciliation remains. Rate limits and unfinished work still
+report a pause.
 
 For a new installation, initialize the `data` branch with a tested snapshot,
 enable Pages with **GitHub Actions** as its source, then dispatch the workflow.
