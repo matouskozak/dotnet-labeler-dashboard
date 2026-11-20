@@ -193,7 +193,7 @@ def test_daily_plot_filters_deduplicates_and_distinguishes_partial_days(site, br
         assert page.locator('#trend circle[aria-label*="2026-11-16: 0"]').count() == 3
         assert page.locator('#trend circle[aria-label*="2026-11-17"]').count() == 0
         assert page.locator('#trend circle[aria-label*="2026-11-18: 1"]').count() == 2
-        assert "(partial)" in page.locator("#trend-values").text_content()
+        assert "(partial:" in page.locator("#trend-values").text_content()
         assert page.locator("#trend svg").get_attribute("role") == "img"
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -238,11 +238,10 @@ def test_manual_and_dry_run_unknowns_only_affect_operational_counts(site, browse
     with browser.new_page() as page:
         page.clock.install(time=now)
         page.goto(url, wait_until="networkidle")
-        assert page.locator("#streams .badge").first.inner_text() == (
-            "PARTIAL" if production_gap else "COLLECTED"
-        )
+        assert page.locator("#streams .badge").first.inner_text() == "CAUGHT UP"
+        assert "Collection caught up" in page.locator("#freshness").inner_text()
         assert (
-            "History is incomplete" in page.locator("#freshness").inner_text()
+            "Prediction results missing for 1 run" in page.locator("#streams").inner_text()
         ) is production_gap
         page.get_by_text("Details", exact=True).click()
         assert (
@@ -318,3 +317,112 @@ def test_roslyn_filter_links_no_selection_summary_and_daily_plot(site, browser):
         page.select_option("#kind", "pr")
         assert page.locator("#cohort-note").inner_text() == "0 items"
         assert page.locator('#changes a[href$="/86557"]').count() == 0
+
+
+def test_collected_history_with_prediction_gaps_has_independent_chart_lines_and_status(
+    site, browser
+):
+    output, url, _ = site
+    state = fixture()
+    now = instant("2026-11-19T12:00:00Z")
+    state["data_as_of"] = "2026-11-19T12:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": state["data_as_of"],
+    }
+    for key, evidence, status, conclusion in (
+        ("unknown", "unknown", "completed", "success"),
+        ("queued", "pending", "queued", None),
+        ("failed", "technical_failure", "completed", "failure"),
+        ("blocked", "unknown", "completed", "action_required"),
+    ):
+        state["runs"][key] = {
+            **state["runs"]["run1"],
+            "evidence": evidence,
+            "status": status,
+            "conclusion": conclusion,
+            "collected": status == "completed",
+        }
+    state["errors"]["historic"] = {
+        "stage": "collector",
+        "message": "Previous request failed",
+        "count": 1,
+        "first_seen": "2026-11-11T00:00:00Z",
+        "last_seen": "2026-11-11T00:00:00Z",
+    }
+    render(state, CONFIG, now, output)
+    payload = json.loads((output / "data-v2.json").read_text())
+    assert payload["streams"][0]["prediction_results"] == {
+        "missing": 1,
+        "pending": 1,
+        "failed_or_blocked": 2,
+    }
+    with browser.new_page() as page:
+        page.clock.install(time=now)
+        page.goto(url, wait_until="networkidle")
+        assert page.locator("#streams .badge").first.inner_text() == "CAUGHT UP"
+        card = page.locator("#streams .stream").first.inner_text()
+        assert "Prediction results missing for 1 run" in card
+        assert "1 run pending" in card
+        assert "2 failed or blocked runs" in card
+        assert page.locator("#freshness").inner_text() == (
+            "Updated 2026-11-19 12:00 UTC. Collection caught up. Recorded errors in Details."
+        )
+        values = page.evaluate("dailyRows(data.items.filter(selected))")
+        day = next(row for row in values if row["date"] == "2026-11-11")
+        assert not day["complete"]
+        assert day["series_complete"] == {
+            "applied": False,
+            "no_selection": False,
+            "human_changed": True,
+        }
+        human = page.locator('#trend circle[aria-label="2026-11-11: 1 human label changes"]')
+        assert human.count() == 1 and human.get_attribute("fill") != "white"
+        applied = page.locator(
+            '#trend circle[aria-label="2026-11-11: 1 labels applied (partial: prediction results missing)"]'
+        )
+        assert applied.count() == 1 and applied.get_attribute("fill") == "white"
+        assert (
+            page.locator('#trend circle[aria-label*="2026-11-11: 0 no label chosen"]').count() == 0
+        )
+        assert (
+            page.locator('#trend circle[aria-label="2026-11-12: 0 human label changes"]').count()
+            == 1
+        )
+        page.select_option("#kind", "pr")
+        assert "No daily data" in page.locator("#trend").inner_text()
+        page.select_option("#kind", "issue")
+        assert human.count() == 1
+        page.get_by_text("Details", exact=True).click()
+        assert "Previous request failed" in page.locator("#errors").inner_text()
+        page.clock.fast_forward(4 * 3600 * 1000)
+        assert (
+            "Data is stale. Last discovery refresh: 2026-11-19 12:00 UTC."
+            == page.locator("#freshness").inner_text()
+        )
+
+
+@pytest.mark.parametrize("unfinished", ["backfill", "parser", "timeline", "fetch_error"])
+def test_unfinished_collection_does_not_get_caught_up_badge(site, browser, unfinished):
+    output, url, _ = site
+    state = fixture()
+    now = instant("2026-11-19T12:00:00Z")
+    state["data_as_of"] = "2026-11-19T12:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": state["data_as_of"],
+    }
+    if unfinished == "backfill":
+        state["streams"]["dotnet/machinelearning:issue"]["backfill_to"] = "2026-11-15T00:00:00Z"
+    elif unfinished == "parser":
+        state["runs"]["run1"]["parser_version"] = 2
+    elif unfinished == "timeline":
+        next(iter(state["items"].values()))["reconcile_requested"] = True
+    else:
+        state["runs"]["run1"].update(collected=False, evidence="unavailable", status="completed")
+    render(state, CONFIG, now, output)
+    with browser.new_page() as page:
+        page.clock.install(time=now)
+        page.goto(url, wait_until="networkidle")
+        assert page.locator("#streams .badge").first.inner_text() == "COLLECTING"
+        assert "Collection is incomplete" in page.locator("#freshness").inner_text()

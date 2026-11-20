@@ -212,3 +212,125 @@ def test_unresolved_attempt_spanning_midnight_keeps_both_execution_days_partial(
     assert days["2026-11-16"]
     assert not days["2026-11-17"]
     assert not days["2026-11-18"]
+
+
+def covered_state():
+    state = fixture()
+    state["cohort_start"] = "2026-11-10T00:00:00Z"
+    state["repositories"]["dotnet/machinelearning"] = {
+        "intake_complete": True,
+        "updated_checkpoint": "2026-11-19T12:00:00Z",
+    }
+    return state
+
+
+@pytest.mark.parametrize("evidence", ["unknown", "pending", "unavailable", "technical_failure"])
+def test_missing_prediction_evidence_does_not_make_collected_human_changes_partial(evidence):
+    state = covered_state()
+    state["runs"]["gap"] = {
+        **state["runs"]["run1"],
+        "evidence": evidence,
+        "collected": evidence != "pending",
+        "status": "queued" if evidence == "pending" else "completed",
+        "completed_at": None if evidence == "pending" else state["runs"]["run1"]["completed_at"],
+    }
+    result = summarize(state)
+    day = next(row for row in result["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11")
+    assert day["series_complete"] == {
+        "applied": False,
+        "no_selection": False,
+        "human_changed": True,
+    }
+    assert not day["complete"]  # Cached clients remain conservative.
+    assert day["partial_reason"] == {
+        "applied": "results_missing",
+        "no_selection": "results_missing",
+        "human_changed": None,
+    }
+    assert result["items"][0]["activity"] == summarize(covered_state())["items"][0]["activity"]
+    assert result["changes"] == summarize(covered_state())["changes"]
+    assert result["streams"][0]["collection_caught_up"]
+
+
+@pytest.mark.parametrize("missing", ["intake", "timeline", "run_history"])
+def test_series_coverage_tracks_its_own_missing_history(missing):
+    state = covered_state()
+    if missing == "intake":
+        state["repositories"]["dotnet/machinelearning"]["intake_complete"] = False
+    elif missing == "timeline":
+        state["items"][KEY]["observed_through"] = "2026-11-11T23:59:59Z"
+    else:
+        state["streams"]["dotnet/machinelearning:issue"]["backfill_to"] = "2026-11-11T23:59:59Z"
+    day = next(
+        row
+        for row in summarize(state)["streams"][0]["daily_coverage"]
+        if row["date"] == "2026-11-11"
+    )
+    assert day["series_complete"]["human_changed"] is (missing == "run_history")
+    assert not day["series_complete"]["applied"]
+    assert not day["series_complete"]["no_selection"]
+    assert day["partial_reason"]["applied"] == "history_incomplete"
+    assert day["partial_reason"]["human_changed"] == (
+        None if missing == "run_history" else "history_incomplete"
+    )
+
+
+def test_initial_partial_day_and_current_day_never_become_complete_for_any_series():
+    state = covered_state()
+    state["cohort_start"] = "2026-11-10T12:00:00Z"
+    state["repositories"]["dotnet/machinelearning"]["updated_checkpoint"] = "2026-11-21T00:00:00Z"
+    state["items"][KEY]["observed_through"] = "2026-11-21T00:00:00Z"
+    state["streams"]["dotnet/machinelearning:issue"].update(
+        backfill_to="2026-11-21T00:00:00Z",
+        live_from="2026-11-10T00:00:00Z",
+        live_to="2026-11-21T00:00:00Z",
+    )
+    days = {row["date"]: row for row in summarize(state)["streams"][0]["daily_coverage"]}
+    for boundary in ("2026-11-10", "2026-11-19"):
+        assert not any(days[boundary]["series_complete"].values())
+        assert not days[boundary]["complete"]
+        assert set(days[boundary]["partial_reason"].values()) == {"partial_day"}
+    assert all(days["2026-11-11"]["series_complete"].values())
+
+
+@pytest.mark.parametrize("mode", ["manual", "dry_run"])
+def test_nonproduction_unknowns_do_not_lower_any_daily_series_coverage(mode):
+    state = covered_state()
+    run = {**state["runs"]["run1"], "evidence": "unknown", "manual": mode == "manual"}
+    if mode == "dry_run":
+        run.update(
+            branch="main",
+            configs=[
+                {
+                    "dry_run": True,
+                    "action_version": None,
+                    "action_sha": None,
+                    "threshold": None,
+                    "cache_hit": None,
+                }
+            ],
+        )
+    state["runs"]["nonproduction"] = run
+    result = summarize(state)
+    day = next(row for row in result["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11")
+    assert day["complete"]
+    assert all(day["series_complete"].values())
+    assert result["streams"][1]["daily_coverage"] == []
+    assert not result["streams"][1]["collection_caught_up"]
+
+
+def test_human_coverage_is_for_tracked_cohort_without_overriding_skip_exclusion():
+    state = covered_state()
+    state["attempts"].clear()
+    unknown = summarize(state)
+    assert len(unknown["items"]) == 1
+    assert unknown["items"][0]["unknown"]
+    day = next(
+        row for row in unknown["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11"
+    )
+    assert day["series_complete"]["human_changed"]
+    state["attempts"] = deepcopy(fixture()["attempts"])
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
+    excluded = summarize(state)
+    assert not excluded["items"] and not excluded["changes"]
+    assert excluded["streams"][0]["items"] == 0

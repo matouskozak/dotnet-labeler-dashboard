@@ -67,9 +67,24 @@ edits (`actor_type=User`). Each item counts once per day per line. Retries and
 add/remove pairs do not inflate counts. The lines may overlap. Repository, type,
 and creation-period filters select the items, and the plot shows activity within
 that period. The 7/30-day selections use UTC calendar days, including today.
-Dashed lines and hollow points are partial observed counts. A zero
-is shown only when intake, run history, and timeline follow-up cover that day.
-Missing history stays unknown, not zero.
+Dashed lines and hollow points are partial observed counts. Human-change coverage
+requires complete intake and timelines for the tracked items on that UTC day,
+not predictor logs. Applied/no-selection coverage also requires discovered run
+history and usable prediction evidence. Each line shows zero only when its own
+coverage is complete. Partial first days, today, and missing history stay partial
+or unknown, not zero.
+
+These are counts for the currently tracked cohort, not a promise that future
+evidence will never change membership. Unknown/no-run items remain included.
+A later supported skip-only result can exclude an item and its historical counts.
+The public report keeps the conservative `complete` field for older clients and
+adds `series_complete` and `partial_reason` for the separate chart lines.
+
+Coverage cards distinguish collection from result availability. **Caught up**
+means intake, discovery, parser reprocessing, and timeline reconciliation have
+finished through the displayed refresh time. Missing prediction results, pending
+source runs, and failed/blocked runs are listed separately. They do not imply
+unfinished collection or invent a model outcome.
 
 Fixed 1h/24h intake denominators retain dashboard cohort items old enough for the
 window, including no-run, failed, fallback, and unknown opportunities. Skip-only

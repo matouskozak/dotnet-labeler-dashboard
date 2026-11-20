@@ -116,7 +116,7 @@ def test_complete_run_evaluation_count_is_linear_not_per_item(monkeypatch):
         result = metrics.report(
             synthetic_state(item_count, 1000), CONFIG, instant("2026-11-19T12:00:00Z")
         )
-        assert calls == 2000  # One intake and one daily classification per run.
+        assert calls == 3000  # Intake, daily coverage, and result availability each inspect once.
         assert len(result["items"]) == item_count
         assert all(item["intake_1"]["evidence_complete"] for item in result["items"])
 

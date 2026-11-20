@@ -27,7 +27,7 @@
       <h2 id="trend-title">Daily activity</h2>
       <div id="trend-legend" class="legend"></div>
       <div id="trend"></div>
-      <p id="trend-note" class="caption">Items per day (UTC) in the selected creation period. Dashed lines show partial counts. Gaps are unknown, not zero.</p>
+      <p id="trend-note" class="caption">Tracked items per day (UTC). Each line uses its own coverage. Dashed counts are partial. Gaps are unknown, not zero.</p>
       <div class="sr-only"><table id="trend-values"></table></div>
     </section>
     <section aria-labelledby="streams-title">
@@ -61,6 +61,7 @@
       <p class="caption">Confirmation requires a predictor result and matching label event. Manual and dry-run attempts are excluded. Skip-only pre-labeled items are hidden. Unknown results remain included.</p>
       <p class="caption">No label chosen includes explicit abstentions with or without a fallback label. It does not imply a known below-threshold reason.</p>
       <p class="caption">Human label edits and bot reapplications come from timeline history. Adjacent add/remove edits by the same person within 5 seconds share one row. This does not confirm a prediction. Daily lines count each item once per day per result and can overlap.</p>
+      <p class="caption">Caught up means collection and reprocessing have finished through the displayed refresh time, not that every prediction result is known. Human-change coverage uses item timelines. Prediction coverage also needs usable run evidence. Counts describe the currently tracked items. Later skip evidence can exclude an item.</p>
       <p class="caption">Configuration and run counts below include all collected runs, not just displayed items. Thresholds come from logs. Model versions are unknown.</p>
       <div class="table-wrap"><table><thead><tr><th>Stream / branch</th><th>Threshold</th><th>Action</th><th>Cache hit</th><th>Model</th><th>Run attempts</th></tr></thead><tbody id="configuration"></tbody></table></div>
       <h3>Source access</h3><div id="permissions"></div>

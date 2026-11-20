@@ -341,21 +341,53 @@ def daily_coverage(state, stream, items, runs, now):
         run_window_complete = (start <= day and progress.get("backfill_to", "") >= upper) or (
             progress.get("live_from", "~") <= lower and progress.get("live_to", "") >= upper
         )
-        complete = bool(
-            intake.get("intake_complete")
+        full_day = start <= day and end <= now
+        history_complete = bool(
+            full_day
+            and intake.get("intake_complete")
             and (intake.get("updated_checkpoint") or "") >= upper
-            and run_window_complete
-            and not any(
-                attempt_overlaps(attempt, run, lower, upper) for attempt, run in unresolved_attempts
-            )
             and all(
                 (item.get("observed_through") or "") >= upper
                 for item in items
                 if item["created_at"] < upper
             )
+        )
+        complete = bool(
+            history_complete
+            and run_window_complete
+            and not any(
+                attempt_overlaps(attempt, run, lower, upper) for attempt, run in unresolved_attempts
+            )
             and not run_gaps.overlaps(lower, upper)
         )
-        coverage.append({"date": lower[:10], "complete": complete})
+        history_reason = (
+            "partial_day"
+            if not full_day
+            else "history_incomplete"
+            if not history_complete
+            else None
+        )
+        prediction_reason = (
+            history_reason
+            or ("history_incomplete" if not run_window_complete else None)
+            or ("results_missing" if not complete else None)
+        )
+        coverage.append(
+            {
+                "date": lower[:10],
+                "complete": complete,
+                "series_complete": {
+                    "applied": complete,
+                    "no_selection": complete,
+                    "human_changed": history_complete,
+                },
+                "partial_reason": {
+                    "applied": prediction_reason,
+                    "no_selection": prediction_reason,
+                    "human_changed": history_reason,
+                },
+            }
+        )
         day = end
     return coverage
 
@@ -382,6 +414,11 @@ def report(state, config, now):
     }
     runs_by_stream = defaultdict(list)
     terminal_runs, unresolved_attempt_runs = set(), set()
+    stale_attempt_runs = {
+        attempt["run"]
+        for attempt in state["attempts"].values()
+        if attempt.get("parser_version", PARSER_VERSION) != PARSER_VERSION
+    }
     for attempt in state["attempts"].values():
         if production(attempt):
             target = (
@@ -504,6 +541,40 @@ def report(state, config, now):
         repo_progress = state["repositories"].get(stream["repo"], {})
         stream_runs = runs_by_stream[key]
         source_items = [state["items"][item["key"]] for item in items]
+        pending_timelines = sum(pending_timeline(item) for item in source_items)
+        collection_pending_runs = sum(
+            run.get("parser_version", PARSER_VERSION) != PARSER_VERSION
+            or run["key"] in stale_attempt_runs
+            or run["evidence"] == "parser_upgrade_pending"
+            or (
+                not run["collected"]
+                and not (
+                    run["evidence"] == "pending"
+                    and run.get("status")
+                    in {"queued", "in_progress", "waiting", "pending", "requested"}
+                )
+            )
+            for run in stream_runs
+        )
+        unresolved = {run["key"] for run in unresolved_by_stream[key]} | {
+            run["key"] for run in stream_runs if run["key"] in unresolved_attempt_runs
+        }
+        production_runs = [run for run in stream_runs if automatic_run(run)]
+        pending_results = {run["key"] for run in production_runs if run["evidence"] == "pending"}
+        failed_results = {
+            run["key"]
+            for run in production_runs
+            if run["evidence"] == "technical_failure"
+            or run.get("conclusion")
+            in {
+                "failure",
+                "timed_out",
+                "cancelled",
+                "action_required",
+                "startup_failure",
+                "stale",
+            }
+        }
         result["streams"].append(
             {
                 **stream,
@@ -513,11 +584,25 @@ def report(state, config, now):
                 "feed_gap": repo_progress.get("feed_gap", False),
                 "items": len(items),
                 "timelines": sum(bool(item["observed_through"]) for item in items),
-                "pending_timelines": sum(pending_timeline(item) for item in source_items),
-                "production_incomplete_runs": len(
-                    {run["key"] for run in unresolved_by_stream[key]}
-                    | {run["key"] for run in stream_runs if run["key"] in unresolved_attempt_runs}
+                "pending_timelines": pending_timelines,
+                "production_incomplete_runs": len(unresolved),
+                "collection_pending_runs": collection_pending_runs,
+                "collection_caught_up": bool(
+                    stream["enabled"]
+                    and repo_progress.get("intake_complete")
+                    and not repo_progress.get("last_error")
+                    and progress.get("live_to")
+                    and (repo_progress.get("updated_checkpoint") or "") >= progress["live_to"]
+                    and progress.get("backfill_to", "") >= progress["live_to"]
+                    and not progress.get("last_error")
+                    and not pending_timelines
+                    and not collection_pending_runs
                 ),
+                "prediction_results": {
+                    "missing": len(unresolved - pending_results - failed_results),
+                    "pending": len(pending_results),
+                    "failed_or_blocked": len(failed_results),
+                },
                 "daily_coverage": daily_coverage(state, stream, source_items, stream_runs, now),
                 "run_attempts": len(stream_runs),
                 "run_evidence": dict(Counter(run["evidence"] for run in stream_runs)),

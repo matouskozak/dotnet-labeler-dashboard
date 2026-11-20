@@ -79,8 +79,16 @@ function dailyRows(items) {
   const rows = [];
   for (let cursor = new Date(`${start}T00:00:00Z`); cursor.toISOString().slice(0, 10) <= end; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
     const day = cursor.toISOString().slice(0, 10);
-    rows.push({date: day, counts: counts.get(day) || {}, complete: streams.every(stream =>
-      (stream.daily_coverage || []).some(row => row.date === day && row.complete))});
+    const coverage = streams.map(stream => (stream.daily_coverage || []).find(row => row.date === day));
+    const seriesComplete = {}, partialReason = {};
+    for (const [name] of series) {
+      seriesComplete[name] = coverage.every(row => row?.series_complete?.[name] ?? row?.complete ?? false);
+      const reasons = coverage.filter(row => !(row?.series_complete?.[name] ?? row?.complete ?? false))
+        .map(row => row?.partial_reason?.[name] || "history_incomplete");
+      partialReason[name] = ["partial_day", "history_incomplete", "results_missing"].find(reason => reasons.includes(reason));
+    }
+    rows.push({date: day, counts: counts.get(day) || {}, complete: coverage.every(row => row?.complete),
+      series_complete: seriesComplete, partial_reason: partialReason});
   }
   return rows;
 }
@@ -120,16 +128,18 @@ function renderTrend(items) {
     tr.append(node("th", row.date));
     for (const [name, text, color] of series) {
       const count = row.counts[name] || 0;
-      const visible = row.complete || count > 0;
-      tr.append(node("td", row.complete ? count : count > 0 ? `${count} (partial)` : "Unknown"));
+      const complete = row.series_complete[name];
+      const reason = {partial_day: "partial day", history_incomplete: "history not collected", results_missing: "prediction results missing"}[row.partial_reason[name]];
+      const visible = complete || count > 0;
+      tr.append(node("td", complete ? count : count > 0 ? `${count} (partial: ${reason})` : "Unknown"));
       if (!visible) continue;
       const previous = rows[index - 1];
-      if (previous && (previous.complete || previous.counts[name] > 0)) {
+      if (previous && (previous.series_complete[name] || previous.counts[name] > 0)) {
         svg.append(svgNode("line", {x1: x(index - 1), y1: y(previous.counts[name] || 0), x2: x(index), y2: y(count),
-          stroke: color, "stroke-width": 2, "stroke-dasharray": row.complete && previous.complete ? "none" : "5 4"}));
+          stroke: color, "stroke-width": 2, "stroke-dasharray": complete && previous.series_complete[name] ? "none" : "5 4"}));
       }
-      const description = `${row.date}: ${count} ${text.toLowerCase()}${row.complete ? "" : " (partial)"}`;
-      const point = svgNode("circle", {cx: x(index), cy: y(count), r: 4, fill: row.complete ? color : "white",
+      const description = `${row.date}: ${count} ${text.toLowerCase()}${complete ? "" : ` (partial: ${reason})`}`;
+      const point = svgNode("circle", {cx: x(index), cy: y(count), r: 4, fill: complete ? color : "white",
         stroke: color, "stroke-width": 2, tabindex: 0, "aria-label": description});
       point.append(svgNode("title", {}, description));
       svg.append(point);
@@ -157,6 +167,11 @@ function incompleteProduction(stream) {
     ["unknown", "unavailable", "pending", "parser_upgrade_pending"].some(key => stream.run_evidence[key]) ? 1 : 0
   );
 }
+function collectionCaughtUp(stream) {
+  return stream.collection_caught_up ?? (stream.intake_complete && stream.timelines === stream.items &&
+    !stream.pending_timelines && stream.backfill_to >= stream.live_to && !stream.last_error &&
+    !incompleteProduction(stream));
+}
 function freshness() {
   const banner = $("freshness");
   const elapsed = data.data_as_of ? (Date.now() - new Date(data.data_as_of)) / 1000 : null;
@@ -165,16 +180,14 @@ function freshness() {
   const unverified = checks.some(check => check.state === "unverified");
   const stale = elapsed == null || elapsed > 3 * 3600;
   banner.className = "notice" + (denied ? " failure" : stale || unverified ? " warning" : "");
-  const partial = data.streams.some(stream => stream.enabled &&
-    (!stream.intake_complete || stream.pending_timelines || stream.backfill_to < stream.live_to ||
-      stream.last_error || incompleteProduction(stream)));
+  const collecting = data.streams.some(stream => stream.enabled && !collectionCaughtUp(stream));
   banner.textContent = denied
     ? "Source access failed. Results are incomplete. See Details."
     : unverified
       ? "Some source access checks are unverified. See Details."
     : stale
       ? `Data is stale. Last discovery refresh: ${date(data.data_as_of)}.`
-      : `Updated ${date(data.data_as_of)}.${partial ? " History is incomplete." : ""}`;
+      : `Updated ${date(data.data_as_of)}. ${collecting ? "Collection is incomplete." : "Collection caught up."}${data.errors.length ? " Recorded errors in Details." : ""}`;
 }
 function render() {
   const items = data.items.filter(selected);
@@ -186,16 +199,22 @@ function render() {
   for (const stream of data.streams) {
     const card = node("article", undefined, "stream");
     card.append(node("h3", `${stream.repo.replace("dotnet/", "")} / ${stream.kind === "pr" ? "Pull requests" : "Issues"}`));
-    const complete = stream.enabled && stream.intake_complete && stream.timelines === stream.items &&
-      !stream.pending_timelines && stream.backfill_to >= stream.live_to && !stream.last_error &&
-      !incompleteProduction(stream);
-    card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "COLLECTED" : "PARTIAL", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
+    const complete = stream.enabled && collectionCaughtUp(stream);
+    card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "CAUGHT UP" : "COLLECTING", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
     if (!stream.enabled) {
       card.append(node("p", "Not monitored."));
     } else {
       const cohortItems = items.filter(item => item.repo === stream.repo && item.kind === stream.kind);
       card.append(node("p", `${cohortItems.length} selected / ${stream.items} collected items`),
         node("p", `${stream.timelines} timelines / ${stream.pending_timelines} pending`));
+      const results = stream.prediction_results;
+      if (results) {
+        if (results.missing) card.append(node("p", `Prediction results missing for ${results.missing} ${results.missing === 1 ? "run" : "runs"}`));
+        if (results.pending) card.append(node("p", `${results.pending} ${results.pending === 1 ? "run pending" : "runs pending"}`));
+        if (results.failed_or_blocked) card.append(node("p", `${results.failed_or_blocked} failed or blocked ${results.failed_or_blocked === 1 ? "run" : "runs"}`));
+      } else if (incompleteProduction(stream)) {
+        card.append(node("p", `${incompleteProduction(stream)} unresolved runs`));
+      }
     }
     $("streams").append(card);
   }
