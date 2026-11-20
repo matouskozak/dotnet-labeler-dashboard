@@ -114,3 +114,47 @@ def test_budget_and_download_host_safety():
     api.limit = 0
     with pytest.raises(BudgetExceeded):
         api.get("/repos/dotnet/runtime")
+
+
+def test_collection_deadline_stops_before_api_call_and_after_retry_wait(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("labeler_dashboard.github.time.monotonic", lambda: clock[0])
+    api = client(response({}))
+    clock[0] = 45 * 60
+    with pytest.raises(BudgetExceeded, match="time limit"):
+        api.get("/repos/dotnet/runtime")
+    api.session.get.assert_not_called()
+    clock[0] = 0
+    api = client(response(status=429, headers={"Retry-After": "1"}), response({}))
+    api.sleep.side_effect = lambda _: clock.__setitem__(0, 45 * 60)
+    with pytest.raises(BudgetExceeded, match="time limit"):
+        api.get("/repos/dotnet/runtime")
+    assert api.session.get.call_count == 1
+
+
+def test_collection_deadline_stops_inflight_log_download(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("labeler_dashboard.github.time.monotonic", lambda: clock[0])
+    api = client(
+        response(
+            status=302,
+            headers={
+                "Location": "https://logs.blob.core.windows.net/example",
+            },
+        )
+    )
+    download = Mock(status_code=200)
+
+    def chunks(*args):
+        clock[0] = 45 * 60
+        yield b"partial log"
+
+    download.iter_content.side_effect = chunks
+    context = Mock()
+    context.__enter__ = Mock(return_value=download)
+    context.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr("labeler_dashboard.github.requests.get", Mock(return_value=context))
+    with pytest.raises(BudgetExceeded, match="time limit"):
+        api.log("dotnet/runtime", 77)
+    assert api.used == 2
+    context.__exit__.assert_called_once()

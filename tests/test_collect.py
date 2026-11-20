@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 from labeler_dashboard.collect import PARSER_VERSION, Collector
-from labeler_dashboard.github import APIError, BudgetExceeded
+from labeler_dashboard.github import APIError, BudgetExceeded, GitHub
 from labeler_dashboard.store import empty_state, instant, load, save, stamp
 
 CONFIG = {
@@ -436,7 +436,7 @@ def test_failed_rerun_audits_rotate_without_overwriting_success_or_starving_sixt
     c.api.get.side_effect = get
     c.api.pages.return_value = jobs(skipped=True)
     c.audit_runs()
-    assert visited == [1, 2, 3, 4, 5]
+    assert visited == [1, 2, 3, 4, 5, 6]
     audits = c.state["repositories"]["dotnet/runtime"]["run_audits"]
     for identity in range(1, 6):
         assert audits[str(identity)]["last_attempted_at"] == c.at
@@ -451,7 +451,7 @@ def test_failed_rerun_audits_rotate_without_overwriting_success_or_starving_sixt
     c.audit_runs()
     assert visited == [1, 2, 3, 4, 5, 6]
     assert "dotnet/runtime:6:2" in c.state["runs"]
-    assert audits["6"]["last_success_at"] == c.at
+    assert audits["6"]["last_success_at"] == "2026-11-19T12:00:00Z"
     assert len(c.state["errors"]) == 5
 
 
@@ -602,7 +602,7 @@ def test_in_progress_old_created_rerun_is_audited_again_next_hour():
     c.audit_runs()
     assert c.state["runs"]["dotnet/runtime:12:2"]["collected"]
     assert c.api.get.call_args_list[0].args[0] == "/repos/dotnet/runtime/actions/runs/12"
-    assert c.api.get.call_count == 5
+    assert c.api.get.call_count == 7
 
 
 @pytest.mark.parametrize("older_work", ["unfinished", "stale_parser"])
@@ -719,3 +719,95 @@ def test_global_budget_exhaustion_remains_visible_without_pending_items():
     c.api.used = c.api.budget
     c.refresh()
     assert c.state["budget_paused"]
+
+
+def audit_with_budget(root_count, budget=4000, remaining=None):
+    session = Mock()
+    visited = []
+
+    def get(url, **kwargs):
+        if url.endswith("/jobs"):
+            data = {"jobs": jobs(skipped=True)[0]}
+        else:
+            identity = int(url.rsplit("/", 1)[1])
+            visited.append(identity)
+            data = source_run(id=identity, event="schedule")
+        headers = (
+            {}
+            if remaining is None
+            else {
+                "X-RateLimit-Remaining": str(remaining - session.get.call_count),
+            }
+        )
+        return Mock(
+            status_code=200,
+            headers=headers,
+            links={},
+            json=Mock(return_value=data),
+        )
+
+    session.get.side_effect = get
+    api = GitHub("not-a-real-secret", budget=budget, session=session)
+    c = Collector(api, empty_state(), CONFIG, NOW)
+    c.initialize()
+    c.state["permissions"]["dotnet/runtime"] = {
+        "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+    }
+    for identity in range(1, root_count + 1):
+        c.state["runs"][f"dotnet/runtime:{identity}:1"] = {
+            "repo": "dotnet/runtime",
+            "kind": "issue",
+            "id": identity,
+            "attempt": 1,
+            "last_checked_at": "2026-11-11T14:03:00Z",
+            "parser_version": PARSER_VERSION - 1,
+            "collected": True,
+            "evidence": "parser_upgrade_pending",
+        }
+    return c, visited
+
+
+def test_audit_processes_more_than_five_roots_but_caps_each_invocation_at_100():
+    c, visited = audit_with_budget(110)
+    c.audit_runs()
+    assert visited == list(range(1, 101))
+    assert c.api.used == 200
+    assert sum(run["parser_version"] == PARSER_VERSION for run in c.state["runs"].values()) == 100
+    assert len(c.state["repositories"]["dotnet/runtime"]["run_audits"]) == 100
+    c.now, c.at = instant("2026-11-19T13:00:00Z"), "2026-11-19T13:00:00Z"
+    c.audit_runs()
+    assert visited == list(range(1, 111))
+    assert all(run["parser_version"] == PARSER_VERSION for run in c.state["runs"].values())
+
+
+@pytest.mark.parametrize("stop", ["request_budget", "quota_reserve", "time_limit"])
+def test_larger_audit_preserves_progress_and_checkpoints_when_safeguard_stops_work(
+    stop, tmp_path, monkeypatch
+):
+    c, visited = audit_with_budget(
+        110,
+        budget=17 if stop == "request_budget" else 4000,
+        remaining=67 if stop == "quota_reserve" else None,
+    )
+    if stop == "time_limit":
+        monkeypatch.setattr(
+            "labeler_dashboard.github.time.monotonic",
+            lambda: c.api.deadline if c.api.used >= 17 else c.api.deadline - 1,
+        )
+    checkpoints = deepcopy(c.state["streams"])
+    c.audit_runs()
+    assert c.api.used == 17
+    assert visited == list(range(1, 10))
+    assert c.state["budget_paused"]
+    assert len(c.state["runs"]) == 110
+    assert c.state["streams"] == checkpoints
+    assert not c.state["runs"]["dotnet/runtime:9:1"]["collected"]
+    assert c.state["runs"]["dotnet/runtime:10:1"]["parser_version"] == PARSER_VERSION - 1
+    if stop == "quota_reserve":
+        assert c.api.remaining == 50
+    path = tmp_path / "state.json"
+    save(path, c.state)
+    restored = load(path)
+    assert restored["streams"] == checkpoints
+    assert restored["repositories"]["dotnet/runtime"]["run_audits"]["8"]["last_success_at"] == c.at
+    assert not restored["runs"]["dotnet/runtime:9:1"]["collected"]

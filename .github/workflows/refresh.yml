@@ -14,7 +14,7 @@ jobs:
   refresh:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -36,7 +36,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.LABELER_READ_TOKEN || github.token }}
-        run: uv run labeler-dashboard refresh --max-requests 900
+        run: uv run labeler-dashboard refresh --max-requests 4000
       - name: Persist evidence before building
         env:
           GH_TOKEN: ${{ github.token }}

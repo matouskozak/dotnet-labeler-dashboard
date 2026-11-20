@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--config", type=Path, default=Path("config/repos.json"))
     parser.add_argument("--state", type=Path, default=Path(".state/state.json"))
     parser.add_argument("--output", type=Path, default=Path("_site"))
-    parser.add_argument("--max-requests", type=int, default=600)
+    parser.add_argument("--max-requests", type=int, default=4000)
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
     if config.get("schema") != 1 or args.max_requests < 50:

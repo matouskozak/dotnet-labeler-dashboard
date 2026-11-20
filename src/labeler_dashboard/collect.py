@@ -512,7 +512,7 @@ class Collector:
             if self.can_collect_runs(run["repo"]):
                 due.append((run, audit, last_attempt, priority))
         due.sort(key=lambda row: (row[3], row[2]))
-        for run, previous, _, _ in due[:5]:
+        for run, previous, _, _ in due[:100]:
             audits = self.state["repositories"][run["repo"]]["run_audits"]
             audit = {**previous}
             stream = next(

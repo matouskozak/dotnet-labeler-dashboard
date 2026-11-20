@@ -83,7 +83,7 @@ uv sync --locked --python 3.12
 uv run playwright install chromium
 uv run pytest
 uv run ruff check .
-uv run labeler-dashboard refresh --max-requests 600
+uv run labeler-dashboard refresh
 uv run labeler-dashboard render
 uv run python -m http.server 8000 --directory _site
 ```
@@ -123,6 +123,13 @@ attempt/job execution times where available. Missing execution times leave the
 possible interval incomplete rather than assigning a rerun to its creation day.
 Known unfinished attempts are audited before stale-parser history and routine
 checks, including when a later attempt is already complete.
+
+Every scheduled or manual refresh allows up to 4,000 requests and audits up to
+100 old-run root IDs. The CLI uses the same request default (`--max-requests`
+can lower it locally). Audits share the total request budget and never bypass
+the 50-request GitHub quota reserve, rate-limit backoff, or retry checkpoints.
+Collection pauses after 45 minutes and saves partial progress. The workflow has
+a 60-minute timeout to leave time for persistence and deployment.
 
 History is a compact schema-versioned JSON snapshot on the dedicated `data`
 branch. This deliberately simple v1 layout has one atomic file replacement for

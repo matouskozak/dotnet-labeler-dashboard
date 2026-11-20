@@ -22,7 +22,7 @@ class BudgetExceeded(RuntimeError):
 
 
 class GitHub:
-    def __init__(self, token: str, budget: int = 600, session=None, sleep=time.sleep):
+    def __init__(self, token: str, budget: int = 4000, session=None, sleep=time.sleep):
         self.session = session or requests.Session()
         self.token = token
         self.budget = budget
@@ -30,11 +30,17 @@ class GitHub:
         self.used = 0
         self.sleep = sleep
         self.remaining = None
+        self.deadline = time.monotonic() + 45 * 60
+
+    def check_deadline(self):
+        if time.monotonic() >= self.deadline:
+            raise BudgetExceeded("Collection time limit reached. Progress will be saved.")
 
     def request(self, path: str, params=None):
         if not path.startswith("/repos/"):
             raise ValueError("Only read-only repository API paths are allowed")
         for retry in range(3):
+            self.check_deadline()
             if self.used >= min(self.budget, self.limit):
                 raise BudgetExceeded("Request budget reached. Checkpoint remains resumable.")
             if self.remaining is not None and self.remaining <= 50:
@@ -134,6 +140,7 @@ class GitHub:
             raise APIError(path, 302, "Unexpected log download host")
         if self.used >= min(self.budget, self.limit):
             raise BudgetExceeded("Request budget reached before log download")
+        self.check_deadline()
         self.used += 1
         try:
             # A fresh, unauthenticated request prevents forwarding the source token.
@@ -145,6 +152,7 @@ class GitHub:
                 chunks = []
                 size = 0
                 for chunk in download.iter_content(64 * 1024):
+                    self.check_deadline()
                     size += len(chunk)
                     if size > 20_000_000:
                         raise APIError(path, 200, "Log exceeds 20 MB safety limit")
