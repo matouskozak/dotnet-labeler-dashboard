@@ -1,16 +1,22 @@
 import re
 
-from .store import instant, relevant_label, stamp
+from .store import area_label, instant, relevant_label, stamp
 
 # These are action source identities, NOT model identities.
 SUPPORTED_ACTIONS = {
     "94442c952121cb5448aaa7e247f65be93c07632e": "v2.3.0",
     "160b6b1e1e8d36da09beb34ef1e4806d2c0520a3": "v2.2.0",
+    "46125e85e6a568dc712f358c39f35317366f5eed": "v2.0.0",
 }
 PRODUCTION_EVENTS = {"issues", "pull_request", "pull_request_target", "schedule"}
 LINE = re.compile(r"^(\d{4}-\d\d-\d\dT[\d:.]+Z) (.*)$")
 RESULT = re.compile(r"^\[(Issue|Pull Request) ([\w.-]+/[\w.-]+)#(\d+)] (.+)$")
 PARSER_VERSION = 3
+NO_SELECTION_OUTCOMES = {"fallback_applied", "fallback_present", "no_selection"}
+
+
+def no_selection(observation):
+    return bool(observation["action_version"]) and observation["outcome"] in NO_SELECTION_OUTCOMES
 
 
 def parse_log(text: str, repo: str) -> dict:
@@ -89,7 +95,7 @@ def parse_log(text: str, repo: str) -> dict:
                 "fallback_present",
                 r"No prediction made\. Default label '(needs-area-label)' is already applied\.",
             ),
-            ("area_applied", r"(?:^| )Label '(area-[^']+)' applied\."),
+            ("area_applied", r"(?:^| )Label '([^']+)' applied\."),
             ("dry_run", r"(?:^| )(?:Label|Default label) '([^']+)' would be applied\."),
             ("fallback_removed", r"Default label '(needs-area-label)' removed\."),
         )
@@ -98,7 +104,12 @@ def parse_log(text: str, repo: str) -> dict:
         matches = []
         for outcome, pattern in patterns:
             for found in re.finditer(pattern, success):
-                if found and relevant_label(found[1]) and len(found[1]) <= 100:
+                is_relevant = (
+                    area_label(found[1])
+                    if outcome in {"area_applied", "existing_area_skip"}
+                    else relevant_label(found[1])
+                )
+                if is_relevant and len(found[1]) <= 100:
                     matches.append((found.start(), outcome, found[1]))
         for _, outcome, label in sorted(matches):
             result["observations"].append({**observation, "outcome": outcome, "label": label})

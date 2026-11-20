@@ -85,5 +85,9 @@ def safe_github_url(value: str | None, repo: str, resource: str) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(pattern, value) else None
 
 
+def area_label(label: str) -> bool:
+    return label.casefold().startswith("area-") and len(label) > len("area-")
+
+
 def relevant_label(label: str) -> bool:
-    return label.startswith("area-") or label == "needs-area-label"
+    return area_label(label) or label == "needs-area-label"

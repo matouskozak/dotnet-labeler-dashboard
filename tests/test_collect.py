@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -811,3 +812,127 @@ def test_larger_audit_preserves_progress_and_checkpoints_when_safeguard_stops_wo
     assert restored["streams"] == checkpoints
     assert restored["repositories"]["dotnet/runtime"]["run_audits"]["8"]["last_success_at"] == c.at
     assert not restored["runs"]["dotnet/runtime:9:1"]["collected"]
+
+
+@pytest.mark.parametrize("unfinished_index", [0, 4])
+def test_caught_up_stream_shares_are_reused_after_fair_first_pass_and_audit(unfinished_index):
+    streams = [
+        {"repo": repo, "kind": kind, "enabled": True, "workflow_id": index}
+        for index, (repo, kind) in enumerate(
+            [
+                ("dotnet/runtime", "issue"),
+                ("dotnet/runtime", "pr"),
+                ("dotnet/machinelearning", "issue"),
+                ("dotnet/roslyn", "issue"),
+                ("dotnet/roslyn", "pr"),
+            ]
+        )
+    ]
+    api = Mock(budget=4000, used=0, remaining=5000)
+    c = Collector(api, empty_state(), {"schema": 1, "backfill_days": 30, "streams": streams}, NOW)
+    c.initialize()
+    c.preflight, c.intake, c.event_feed = Mock(), Mock(), Mock()
+    end = NOW - timedelta(minutes=5)
+    start = end - timedelta(days=1)
+    for repo in c.repos:
+        c.state["permissions"][repo] = {
+            "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+        }
+    for stream in streams:
+        c.state["streams"][f"{stream['repo']}:{stream['kind']}"].update(
+            backfill_to=stamp(end),
+            live_to=stamp(end),
+            live_from=stamp(start),
+        )
+    unfinished = streams[unfinished_index]
+    key = f"{unfinished['repo']}:{unfinished['kind']}"
+    c.state["streams"][key]["backfill_to"] = stamp(start)
+    visited_live = set()
+    audit_state = []
+
+    def runs(repo, workflow, lower, upper):
+        live = (upper - lower) <= timedelta(minutes=10)
+        if live:
+            visited_live.add(workflow)
+        for _ in range(1 if live else 500):
+            if api.used >= api.limit:
+                raise BudgetExceeded("Request budget reached")
+            api.used += 1
+        return []
+
+    def audit():
+        audit_state.append((set(visited_live), c.state["streams"][key]["backfill_to"]))
+        api.used += 100
+
+    api.runs_in_window.side_effect = runs
+    c.audit_runs = Mock(side_effect=audit)
+    c.refresh()
+    c.audit_runs.assert_called_once()
+    assert audit_state[0][0] == set(range(5))
+    assert stamp(start) < audit_state[0][1] < stamp(end)
+    assert c.state["streams"][key]["backfill_to"] == stamp(end)
+    assert api.used < 4000
+
+
+def test_spare_budget_does_not_repeat_blocked_windows_or_starve_other_streams():
+    c = collector()
+    c.api.budget, c.api.used = 20, 0
+    for repo in c.repos:
+        c.state["permissions"][repo] = {
+            "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+        }
+    for progress in c.state["streams"].values():
+        progress["backfill_to"] = stamp(NOW - timedelta(days=1))
+    visited = []
+
+    def window(stream, field, end):
+        visited.append(stream["kind"])
+        c.api.used += 1
+        progress = c.state["streams"][f"{stream['repo']}:{stream['kind']}"]
+        if stream["kind"] == "issue":
+            progress["last_error"] = "Pending run"
+        else:
+            progress[field] = stamp(end)
+
+    c.run_window = Mock(side_effect=window)
+    c.backfill_spare_budget(NOW)
+    assert visited == ["issue", "pr", "pr", "pr", "pr"]
+    assert c.state["streams"]["dotnet/runtime:pr"]["backfill_to"] == stamp(NOW)
+    assert c.state["streams"]["dotnet/runtime:issue"]["backfill_to"] == stamp(
+        NOW - timedelta(days=1)
+    )
+
+
+@pytest.mark.parametrize("stop", ["global_budget", "rate_limit", "time_limit"])
+def test_spare_backfill_respects_shared_safeguards_and_preserves_partial_checkpoint(stop):
+    c = collector()
+    c.api.budget, c.api.used = 2 if stop == "global_budget" else 4000, 0
+    for repo in c.repos:
+        c.state["permissions"][repo] = {
+            "checks": {name: {"ok": True} for name in ("runs", "jobs", "logs")},
+        }
+    before = deepcopy(c.state["streams"])
+    calls = []
+
+    def window(stream, field, end):
+        calls.append(stream["kind"])
+        if stop == "global_budget":
+            c.api.used += 1
+            c.state["streams"][f"{stream['repo']}:{stream['kind']}"][field] = stamp(end)
+        else:
+            raise BudgetExceeded("Paused", rate_limited=stop == "rate_limit")
+
+    c.run_window = Mock(side_effect=window)
+    c.backfill_spare_budget(NOW)
+    assert c.api.used <= c.api.budget
+    if stop == "global_budget":
+        assert calls == ["issue", "pr"]
+        assert c.state["budget_paused"]
+        assert all(
+            before[key]["backfill_to"] < value["backfill_to"] < stamp(NOW)
+            for key, value in c.state["streams"].items()
+        )
+    else:
+        assert calls == ["issue"]
+        assert c.state["streams"] == before
+        assert c.state["budget_paused"]

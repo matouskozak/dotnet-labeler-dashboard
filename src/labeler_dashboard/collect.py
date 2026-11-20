@@ -561,6 +561,50 @@ class Collector:
         else:
             progress["last_error"] = "Pending runs or unavailable evidence. Window will be retried."
 
+    def backfill_spare_budget(self, end):
+        active = [
+            stream
+            for stream in self.enabled
+            if self.can_collect_runs(stream["repo"])
+            and not self.state["streams"][stream_key(stream["repo"], stream["kind"])]["last_error"]
+            and instant(
+                self.state["streams"][stream_key(stream["repo"], stream["kind"])]["backfill_to"]
+            )
+            < end
+        ]
+        while active and self.api.used < self.api.budget:
+            share = max(1, (self.api.budget - self.api.used) // len(active))
+            continuing = []
+            for stream in active:
+                progress = self.state["streams"][stream_key(stream["repo"], stream["kind"])]
+                before = progress["backfill_to"]
+                self.api.limit = min(self.api.budget, self.api.used + share)
+                try:
+                    self.run_window(
+                        stream, "backfill_to", min(instant(before) + timedelta(hours=6), end)
+                    )
+                except APIError as error:
+                    progress["last_error"] = str(error)
+                    self.error(stream_key(stream["repo"], stream["kind"]), error)
+                except BudgetExceeded as error:
+                    self.state["budget_paused"] = True
+                    if error.rate_limited or self.api.used < self.api.limit:
+                        return
+                else:
+                    if progress["backfill_to"] != before and instant(progress["backfill_to"]) < end:
+                        continuing.append(stream)
+                if self.api.used >= self.api.budget:
+                    if any(
+                        instant(
+                            self.state["streams"][stream_key(s["repo"], s["kind"])]["backfill_to"]
+                        )
+                        < end
+                        for s in active
+                    ):
+                        self.state["budget_paused"] = True
+                    return
+            active = continuing
+
     def refresh(self):
         self.initialize()
         self.state["last_refresh_attempt"] = self.at
@@ -577,7 +621,7 @@ class Collector:
                 self.state["budget_paused"] = True
                 break
 
-        # Reserve requests for all three run streams even during the first timeline backfill.
+        # Reserve requests for run streams even during the first timeline backfill.
         self.api.limit = min(self.api.budget, self.api.used + self.api.budget * 35 // 100)
         items = sorted(
             self.state["items"].items(),
@@ -642,6 +686,9 @@ class Collector:
         # Reruns keep created_at. Rotate a separate audit across known run identities.
         self.api.limit = self.api.budget
         self.audit_runs()
+        # Audits get their turn before unfinished streams reuse any unspent shares.
+        self.backfill_spare_budget(end)
+        self.api.limit = self.api.budget
         checkpoints = [
             self.state["repositories"][repo].get("updated_checkpoint") for repo in self.repos
         ] + [

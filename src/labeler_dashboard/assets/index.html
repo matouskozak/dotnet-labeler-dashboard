@@ -18,7 +18,7 @@
     <div id="freshness" role="status" class="notice">Loading...</div>
     <noscript><p class="notice warning">Enable JavaScript to view the dashboard.</p></noscript>
     <section class="filters" aria-label="Cohort filters">
-      <label>Repository<select id="repo"><option value="">All repositories</option><option>dotnet/runtime</option><option>dotnet/machinelearning</option></select></label>
+      <label>Repository<select id="repo"><option value="">All repositories</option><option>dotnet/runtime</option><option>dotnet/machinelearning</option><option>dotnet/roslyn</option></select></label>
       <label>Item type<select id="kind"><option value="">Issues &amp; pull requests</option><option value="issue">Issues</option><option value="pr">Pull requests</option></select></label>
       <label>Created<select id="cohort"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="all">All collected</option></select></label>
       <p id="cohort-note"></p>
@@ -59,6 +59,7 @@
     <details class="panel">
       <summary>Details</summary>
       <p class="caption">Confirmation requires a predictor result and matching label event. Manual and dry-run attempts are excluded. Skip-only pre-labeled items are hidden. Unknown results remain included.</p>
+      <p class="caption">No label chosen includes explicit abstentions with or without a fallback label. It does not imply a known below-threshold reason.</p>
       <p class="caption">Human label edits and bot reapplications come from timeline history. Adjacent add/remove edits by the same person within 5 seconds share one row. This does not confirm a prediction. Daily lines count each item once per day per result and can overlap.</p>
       <p class="caption">Configuration and run counts below include all collected runs, not just displayed items. Thresholds come from logs. Model versions are unknown.</p>
       <div class="table-wrap"><table><thead><tr><th>Stream / branch</th><th>Threshold</th><th>Action</th><th>Cache hit</th><th>Model</th><th>Run attempts</th></tr></thead><tbody id="configuration"></tbody></table></div>

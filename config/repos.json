@@ -5,6 +5,8 @@
     {"repo": "dotnet/runtime", "kind": "issue", "enabled": true, "workflow_id": 160362578},
     {"repo": "dotnet/runtime", "kind": "pr", "enabled": true, "workflow_id": 160362579},
     {"repo": "dotnet/machinelearning", "kind": "issue", "enabled": true, "workflow_id": 389234232},
-    {"repo": "dotnet/machinelearning", "kind": "pr", "enabled": false}
+    {"repo": "dotnet/machinelearning", "kind": "pr", "enabled": false},
+    {"repo": "dotnet/roslyn", "kind": "issue", "enabled": true, "workflow_id": 160813423},
+    {"repo": "dotnet/roslyn", "kind": "pr", "enabled": true, "workflow_id": 160813424}
   ]
 }

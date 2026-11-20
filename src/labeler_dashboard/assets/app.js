@@ -23,7 +23,7 @@ const age = seconds => {
   return `${Math.floor(seconds / 86400)}d`;
 };
 function safeLink(text, url) {
-  if (!/^https:\/\/github\.com\/dotnet\/(?:runtime|machinelearning)\/(?:issues|pull|actions\/runs)\/\d+$/.test(url || "")) return node("span", text);
+  if (!/^https:\/\/github\.com\/dotnet\/(?:runtime|machinelearning|roslyn)\/(?:issues|pull|actions\/runs)\/\d+$/.test(url || "")) return node("span", text);
   const link = node("a", text);
   link.href = url;
   link.rel = "noopener noreferrer";
@@ -203,14 +203,14 @@ function render() {
   const metrics = [
     ["confirmed", "Confirmed labels", true],
     ["probable", "Unconfirmed applications"],
-    ["fallback", "Fallbacks"],
+    ["no_selection", "No label chosen"],
     ["technical_failure", "Application failures"],
     ["unknown", "Unknown outcomes"],
     ["needs_area", "No area label"],
   ];
   for (const [field, title, primary] of metrics) {
     const card = node("div", undefined, `metric${primary ? " primary" : ""}`);
-    card.append(node("div", items.filter(item => item[field]).length, "value"), node("div", title, "label"));
+    card.append(node("div", items.filter(item => field === "no_selection" ? (item.no_selection ?? item.fallback) : item[field]).length, "value"), node("div", title, "label"));
     $("metrics").append(card);
   }
   $("followup").replaceChildren();

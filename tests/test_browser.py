@@ -8,6 +8,8 @@ from threading import Thread
 import pytest
 from playwright.sync_api import sync_playwright
 from test_metrics import CONFIG, fixture
+from test_roslyn import NOW as ROSLYN_NOW
+from test_roslyn import roslyn_fixture
 
 from labeler_dashboard.render import render
 from labeler_dashboard.store import instant
@@ -271,3 +273,48 @@ def test_unverified_preflight_is_not_displayed_as_permission_denial(site, browse
         assert "unverified" in page.locator("#freshness").inner_text()
         assert "failed" not in page.locator("#freshness").inner_text()
         assert page.locator("#freshness").get_attribute("class") == "notice warning"
+
+
+def test_roslyn_filter_links_no_selection_summary_and_daily_plot(site, browser):
+    output, url, _ = site
+    state, config = roslyn_fixture()
+    render(state, config, ROSLYN_NOW, output)
+    with browser.new_page() as page:
+        page.goto(url, wait_until="networkidle")
+        page.select_option("#repo", "dotnet/roslyn")
+        assert page.locator("#cohort-note").inner_text() == "2 items"
+        cards = page.locator("#streams .stream").filter(has_text="roslyn")
+        assert cards.count() == 2
+        assert "NOT ENABLED" not in cards.all_text_contents()
+        metric = page.locator("#metrics .metric").filter(has_text="No label chosen")
+        assert metric.locator(".value").inner_text() == "1"
+        waiting = page.locator("#waiting tr").filter(has_text="#86548")
+        assert waiting.count() == 1
+        assert (
+            waiting.locator("a").get_attribute("href")
+            == "https://github.com/dotnet/roslyn/issues/86548"
+        )
+        assert "Absent" in waiting.inner_text()
+        change = page.locator("#changes tr").filter(has_text="#86547")
+        assert change.locator("td").nth(1).inner_text() == "Area-Compilers"
+        assert change.locator("td").nth(2).inner_text() == "Area-IDE"
+        day = next(
+            row
+            for row in page.evaluate("dailyRows(data.items.filter(selected))")
+            if row["date"] == "2026-11-19"
+        )
+        assert day["counts"] == {"applied": 1, "no_selection": 1}
+        assert (
+            page.evaluate("safeLink('PR','https://github.com/dotnet/roslyn/pull/86557').tagName")
+            == "A"
+        )
+        for address in (
+            "https://github.com/dotnet/roslyn-other/issues/1",
+            "https://github.com/other/roslyn/issues/1",
+            "https://github.com.evil.example/dotnet/roslyn/issues/1",
+            "javascript:alert(1)",
+        ):
+            assert page.evaluate("url => safeLink('untrusted',url).tagName", address) == "SPAN"
+        page.select_option("#kind", "pr")
+        assert page.locator("#cohort-note").inner_text() == "0 items"
+        assert page.locator('#changes a[href$="/86557"]').count() == 0

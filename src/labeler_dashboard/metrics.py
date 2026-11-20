@@ -2,8 +2,8 @@ from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import timedelta
 
-from .evidence import PARSER_VERSION
-from .store import instant, pending_timeline, stamp, stream_key
+from .evidence import PARSER_VERSION, no_selection
+from .store import area_label, instant, pending_timeline, stamp, stream_key
 
 
 def production(attempt):
@@ -106,7 +106,7 @@ def only_existing_area_skips(attempts):
         if not results or any(
             row["outcome"] != "existing_area_skip"
             or not row["action_version"]
-            or not (row["label"] or "").startswith("area-")
+            or not area_label(row["label"] or "")
             for row in results
         ):
             return False
@@ -292,6 +292,8 @@ def intake_view(item, events, attempts, applications, progress, run_gaps, run_lo
         if "application_failure" in outcomes
         else "fallback"
         if outcomes & {"fallback_applied", "fallback_present"}
+        else "no_selection"
+        if "no_selection" in outcomes
         else "no_confirmed_application"
     )
     return {"status": status, "evidence_complete": complete}
@@ -301,7 +303,7 @@ def daily_activity(events, attempts, confirmed):
     days = defaultdict(set)
     for event in events:
         day = event["at"][:10]
-        if event["key"] in confirmed and event["label"].startswith("area-"):
+        if event["key"] in confirmed and area_label(event["label"]):
             days[day].add("applied")
         if event["actor_type"] == "User":
             days[day].add("human_changed")
@@ -309,11 +311,7 @@ def daily_activity(events, attempts, confirmed):
         if not production(attempt):
             continue
         for observation in attempt["observations"]:
-            if observation["action_version"] and observation["outcome"] in {
-                "fallback_applied",
-                "fallback_present",
-                "no_selection",
-            }:
+            if no_selection(observation):
                 days[observation["at"][:10]].add("no_selection")
     return [{"date": day, "series": sorted(series)} for day, series in sorted(days.items())]
 
@@ -423,7 +421,7 @@ def report(state, config, now):
         applications = [
             {**event, "run": confirmed[event["key"]]["run"]}
             for event in item_events
-            if event["key"] in confirmed and event["label"].startswith("area-")
+            if event["key"] in confirmed and area_label(event["label"])
         ]
         primary = applications[0] if applications else None
         key_stream = stream_key(item["repo"], item["kind"])
@@ -461,6 +459,7 @@ def report(state, config, now):
                 and observation["action_version"]
                 for observation in observed
             ),
+            "no_selection": any(no_selection(observation) for observation in observed),
             "skip": any(
                 observation["outcome"] == "existing_area_skip" and observation["action_version"]
                 for observation in observed
@@ -471,7 +470,7 @@ def report(state, config, now):
             "unknown": bool(item.get("timeline_availability"))
             or not production_attempts
             or any(not supported_terminal_evidence(attempt) for attempt in production_attempts),
-            "needs_area": not any(label.startswith("area-") for label in item["labels"]),
+            "needs_area": not any(area_label(label) for label in item["labels"]),
             "fallback_marker": "needs-area-label" in item["labels"],
             "timeline_unavailable": bool(item.get("timeline_availability")),
             "activity": daily_activity(item_events, item_attempts, confirmed),

@@ -6,16 +6,24 @@ Read-only production monitoring for the .NET issue labeler.
 
 ## What it measures
 
-Enabled streams are runtime issues, runtime pull requests, and ML.NET issues.
+Enabled streams are runtime issues and pull requests, ML.NET issues, and Roslyn
+issues and pull requests.
 ML.NET pull requests are **not enabled**, not failures. Intake includes open,
 closed, and merged items. Filters select repository, item type, and creation cohort.
 
-The dashboard separates confirmed area applications, no-selection fallbacks,
+The dashboard separates confirmed area applications, explicit no-selection results,
 application failures, and unknown evidence. It shows dashboard cohort items
 currently lacking an area label (with or without a fallback marker or observed
 run), human area changes, fallback resolutions, and bot
 reapplications. It does **not** claim prediction accuracy, precision, or exact
 scoring coverage.
+
+Area-label recognition is case-insensitive, while original spelling is preserved
+(for example, Roslyn's `Area-Compilers`). Roslyn's supported v2.0.0 predictor does
+not configure a fallback label. Its explicit abstentions count as **No label
+chosen** in results and daily activity and remain in the needs-area table.
+They are not treated as errors or unknown solely because a fallback is absent.
+The logs do not always distinguish no scores from below-threshold predictions.
 
 Items whose automatic attempts only report supported existing-area skips are
 excluded from the published item dataset, tables, item counts, and intake
@@ -130,6 +138,10 @@ can lower it locally). Audits share the total request budget and never bypass
 the 50-request GitHub quota reserve, rate-limit backoff, or retry checkpoints.
 Collection pauses after 45 minutes and saves partial progress. The workflow has
 a 60-minute timeout to leave time for persistence and deployment.
+After the bounded per-stream pass and old-run audit, unfinished backfills reuse
+unspent requests in six-hour window turns. Caught-up streams do not hold their
+unused share. A blocked or interrupted window waits for the next refresh rather
+than repeatedly consuming the remaining budget.
 
 History is a compact schema-versioned JSON snapshot on the dedicated `data`
 branch. This deliberately simple v1 layout has one atomic file replacement for
@@ -140,7 +152,7 @@ unassigned technical failures. Retrying interrupted work is idempotent.
 Nothing automatically deletes evidence. The snapshot will grow over time.
 
 Only normalized public observations are retained. The parser is versioned and
-supports the observed v2.2.0 and v2.3.0 action SHAs. Unknown action revisions or
+supports the observed v2.0.0, v2.2.0, and v2.3.0 action SHAs. Unknown action revisions or
 result grammar remain unknown. Thresholds, action SHA, and cache hits are read
 from actual logs. Main and release branches stay separate. Historical model
 content identities are unavailable and are **not** invented from cache keys or
@@ -159,12 +171,12 @@ It persists the data branch before rendering and deploying a Pages artifact.
 Source commits do not contain monitoring updates. CI runs pytest and Ruff.
 
 The actual refresh credential is preflighted against issue, timeline, run, job,
-and recent log-download endpoints on both source repositories. The default is
+and recent log-download endpoints on all three source repositories. The default is
 the dashboard's `GITHUB_TOKEN`, **not** an assumption of cross-repository Actions
 access. If preflight reports missing access, an administrator must configure
 the `LABELER_READ_TOKEN` Actions secret with a read-only fine-grained PAT or
 installation token granting **Actions, Issues, Pull requests, and Metadata read**
-access to `dotnet/runtime` and `dotnet/machinelearning`. No source-write permission
+access to `dotnet/runtime`, `dotnet/machinelearning`, and `dotnet/roslyn`. No source-write permission
 is requested. Local credentials are never copied into Actions automatically.
 The log probe checks up to three eligible older completed runs and two executed
 jobs per run, with a five-minute completion buffer. Missing samples are reported
