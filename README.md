@@ -175,6 +175,13 @@ group serializes collection, normal non-force data pushes, and deployment.
 It persists the data branch before rendering and deploying a Pages artifact.
 Source commits do not contain monitoring updates. CI runs pytest and Ruff.
 
+For publication recovery, manually dispatch with `publish_only=true`. This reads
+the latest remote data branch and renders/deploys it without source collection
+or a data commit/push. The default is false, so scheduled and normal manual
+refreshes are unchanged. After upload, deployment checks this run's Pages artifact
+metadata up to six times, ten seconds apart. Only empty successful listings are
+retried. API errors or a missing artifact after that bound fail visibly.
+
 The actual refresh credential is preflighted against issue, timeline, run, job,
 and recent log-download endpoints on all three source repositories. The default is
 the dashboard's `GITHUB_TOKEN`, **not** an assumption of cross-repository Actions
