@@ -182,14 +182,15 @@ def test_multiple_items_multiple_attempts_and_manual():
     assert c.api.log.call_count == 2
 
 
-def test_pending_run_does_not_complete_window():
+def test_persisted_pending_run_advances_discovery_without_completing_evidence():
     c = collector()
     c.api.runs_in_window.return_value = [source_run(status="in_progress")]
-    before = deepcopy(c.state["streams"]["dotnet/runtime:issue"])
     c.run_window(CONFIG["streams"][0], "live_to", NOW)
     after = c.state["streams"]["dotnet/runtime:issue"]
-    assert after["live_to"] == before["live_to"]
+    assert after["live_to"] == stamp(NOW)
+    assert after["last_error"] is None
     assert not c.state["runs"]["dotnet/runtime:12:1"]["collected"]
+    assert c.state["runs"]["dotnet/runtime:12:1"]["evidence"] == "pending"
 
 
 def test_no_work_green_run_and_expired_logs_are_distinct():

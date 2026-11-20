@@ -121,16 +121,21 @@ Redirects are not followed to other repositories or arbitrary hosts.
 Only the configured prediction workflows are queried. Run-created windows are
 split below GitHub's 1,000-result cap, with full pagination and bounded request
 budgets. Recent work is collected before the resumable six-hour backfill windows.
-Interrupted windows retain evidence without advancing their checkpoints.
-Unfinished runs remain pending. A rotating audit of known run identities detects
+Discovery checkpoints advance only after the full window listing and run records
+are persisted together. A recorded queued or other nonterminal source run does
+not block discovery of later windows. It remains `collected=false`, with pending
+evidence and incomplete production/day coverage, until a later audit completes it.
+Listing, fetch, or budget interruptions still prevent unsafe checkpoint advancement.
+A rotating audit of known run identities detects
 reruns with old creation timestamps. Such reruns can remain undiscovered until
 their audit turn, shown in operations.
 Failed run lookups retain their errors and back off independently of successful
 checks, so inaccessible runs do not block later audits. Coverage gaps use actual
 attempt/job execution times where available. Missing execution times leave the
 possible interval incomplete rather than assigning a rerun to its creation day.
-Known unfinished attempts are audited before stale-parser history and routine
-checks, including when a later attempt is already complete.
+Known unfinished attempts and stale-parser history alternate audit turns before
+routine checks, including when a later attempt is already complete. Stuck source
+jobs cannot consume every audit slot while parser upgrades remain.
 
 Every scheduled or manual refresh allows up to 4,000 requests and audits up to
 100 old-run root IDs. The CLI uses the same request default (`--max-requests`

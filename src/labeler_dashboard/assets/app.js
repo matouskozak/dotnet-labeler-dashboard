@@ -173,7 +173,7 @@ function freshness() {
     : unverified
       ? "Some source access checks are unverified. See Details."
     : stale
-      ? `Data is stale. Last complete refresh: ${date(data.data_as_of)}.`
+      ? `Data is stale. Last discovery refresh: ${date(data.data_as_of)}.`
       : `Updated ${date(data.data_as_of)}.${partial ? " History is incomplete." : ""}`;
 }
 function render() {
@@ -274,7 +274,7 @@ function render() {
     node("div", `Build: ${date(data.built_at)}. Refresh attempted: ${date(data.last_refresh_attempt)}. Requests used: ${data.requests_used ?? "unknown"}. Remaining API quota: ${data.rate_remaining ?? "unknown"}. Budget pause: ${data.budget_paused ? "yes (resumable)" : "no"}.`, "ops-row")
   );
   for (const stream of data.streams.filter(stream => stream.enabled)) {
-    $("operations").append(node("div", `${stream.repo} / ${stream.kind}: history through ${date(stream.backfill_to)}. Last live refresh ${date(stream.last_success)}.${stream.last_error ? " " + stream.last_error : ""}${stream.feed_gap ? " Event-feed gap recorded." : ""}`, "ops-row"));
+    $("operations").append(node("div", `${stream.repo} / ${stream.kind}: runs discovered through ${date(stream.backfill_to)}. Last live refresh ${date(stream.last_success)}.${stream.last_error ? " " + stream.last_error : ""}${stream.feed_gap ? " Event-feed gap recorded." : ""}`, "ops-row"));
     $("operations").append(node("div", `${stream.repo} / ${stream.kind}: ${stream.run_attempts} collected workflow run attempts (all items, independent of dashboard cohort). ${Object.entries(stream.run_evidence).map(([name, count]) => `${label(name)} ${count}`).join(", ") || "No runs observed"}. Oldest retry audit: ${date(stream.oldest_retry_check)}.`, "ops-row"));
     if (Object.keys(stream.failure_phases).length) $("operations").append(node("div", `Explicit failed steps: ${Object.entries(stream.failure_phases).map(([name, count]) => `${label(name)} ${count}`).join(", ")}. These are run-level failures, not inferred per-item outcomes.`, "ops-row"));
   }

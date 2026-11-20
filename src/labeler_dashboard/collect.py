@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import timedelta
+from itertools import zip_longest
 
 from .evidence import PARSER_VERSION, PRODUCTION_EVENTS, outcome, parse_log, prediction_step
 from .github import APIError, BudgetExceeded
@@ -512,6 +513,11 @@ class Collector:
             if self.can_collect_runs(run["repo"]):
                 due.append((run, audit, last_attempt, priority))
         due.sort(key=lambda row: (row[3], row[2]))
+        pending = [row for row in due if row[3] == 0]
+        upgrades = [row for row in due if row[3] == 1]
+        due = [
+            row for pair in zip_longest(pending, upgrades) for row in pair if row is not None
+        ] + [row for row in due if row[3] == 2]
         for run, previous, _, _ in due[:100]:
             audits = self.state["repositories"][run["repo"]]["run_audits"]
             audit = {**previous}
@@ -550,16 +556,31 @@ class Collector:
         if start >= end:
             return
         runs = self.api.runs_in_window(stream["repo"], stream["workflow_id"], start, end)
-        completed = True
+        discovered = True
         for run in sorted(runs, key=lambda row: row["id"]):
-            completed = self.collect_run(stream, run) and completed
-        if completed:
+            complete = self.collect_run(stream, run)
+            if not complete:
+                # Pending source work is discoverable, not completed evidence.
+                complete = all(
+                    (record := self.state["runs"].get(f"{stream['repo']}:{run['id']}:{attempt}"))
+                    and (
+                        record["collected"]
+                        or (
+                            record.get("status")
+                            in {"queued", "in_progress", "waiting", "pending", "requested"}
+                            and record["evidence"] == "pending"
+                        )
+                    )
+                    for attempt in range(1, run.get("run_attempt", 1) + 1)
+                )
+            discovered = complete and discovered
+        if discovered:
             progress[field] = stamp(end)
             progress["last_error"] = None
             if field == "live_to":
                 progress["last_success"] = self.at
         else:
-            progress["last_error"] = "Pending runs or unavailable evidence. Window will be retried."
+            progress["last_error"] = "Run evidence fetch incomplete. Window will be retried."
 
     def backfill_spare_budget(self, end):
         active = [
