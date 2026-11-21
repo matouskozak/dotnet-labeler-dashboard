@@ -15,6 +15,10 @@ const series = [
   ["no_selection", "No label chosen", "#986000"],
   ["human_changed", "Human label changes", "#346cba"],
 ];
+const sourceRepos = new Set([
+  "dotnet/runtime", "dotnet/machinelearning", "dotnet/roslyn", "dotnet/extensions",
+  "microsoft/aspire", "gitextensions/gitextensions",
+]);
 const age = seconds => {
   if (seconds == null) return "Unknown";
   if (seconds < 60) return `${Math.max(0, Math.floor(seconds))}s`;
@@ -23,7 +27,8 @@ const age = seconds => {
   return `${Math.floor(seconds / 86400)}d`;
 };
 function safeLink(text, url) {
-  if (!/^https:\/\/github\.com\/dotnet\/(?:runtime|machinelearning|roslyn)\/(?:issues|pull|actions\/runs)\/\d+$/.test(url || "")) return node("span", text);
+  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull|actions\/runs)\/\d+$/.exec(url || "");
+  if (!match || !sourceRepos.has(match[1])) return node("span", text);
   const link = node("a", text);
   link.href = url;
   link.rel = "noopener noreferrer";
@@ -198,7 +203,7 @@ function render() {
   $("streams").replaceChildren();
   for (const stream of data.streams) {
     const card = node("article", undefined, "stream");
-    card.append(node("h3", `${stream.repo.replace("dotnet/", "")} / ${stream.kind === "pr" ? "Pull requests" : "Issues"}`));
+    card.append(node("h3", `${stream.repo} / ${stream.kind === "pr" ? "Pull requests" : "Issues"}`));
     const complete = stream.enabled && collectionCaughtUp(stream);
     card.append(node("span", !stream.enabled ? "NOT ENABLED" : complete ? "CAUGHT UP" : "COLLECTING", `badge ${!stream.enabled ? "disabled" : complete ? "" : "pending"}`));
     if (!stream.enabled) {
@@ -207,6 +212,7 @@ function render() {
       const cohortItems = items.filter(item => item.repo === stream.repo && item.kind === stream.kind);
       card.append(node("p", `${cohortItems.length} selected / ${stream.items} collected items`),
         node("p", `${stream.timelines} timelines / ${stream.pending_timelines} pending`));
+      if (stream.base_branches) card.append(node("p", `PR bases: ${stream.base_branches.join(", ")} only`));
       const results = stream.prediction_results;
       if (results) {
         if (results.missing) card.append(node("p", `Prediction results missing for ${results.missing} ${results.missing === 1 ? "run" : "runs"}`));
@@ -311,6 +317,8 @@ fetch("data-v2.json", {cache: "no-store"}).then(response => {
 }).then(value => {
   if (![1, 2].includes(value.schema)) throw new Error("Unsupported data format");
   data = value;
+  $("repo").replaceChildren(new Option("All repositories", ""),
+    ...[...new Set(data.streams.map(stream => stream.repo))].map(repo => new Option(repo, repo)));
   for (const id of ["repo", "kind", "cohort"]) $(id).addEventListener("change", render);
   render();
   setInterval(freshness, 60000);

@@ -10,6 +10,8 @@ from playwright.sync_api import sync_playwright
 from test_metrics import CONFIG, fixture
 from test_roslyn import NOW as ROSLYN_NOW
 from test_roslyn import roslyn_fixture
+from test_sources import NOW as SOURCES_NOW
+from test_sources import source_fixture
 
 from labeler_dashboard.render import render
 from labeler_dashboard.store import instant
@@ -426,3 +428,85 @@ def test_unfinished_collection_does_not_get_caught_up_badge(site, browser, unfin
         page.goto(url, wait_until="networkidle")
         assert page.locator("#streams .badge").first.inner_text() == "COLLECTING"
         assert "Collection is incomplete" in page.locator("#freshness").inner_text()
+
+
+def test_new_source_filters_preserve_owner_names_prefixes_and_exact_safe_links(site, browser):
+    output, url, _ = site
+    state, settings = source_fixture()
+    render(state, settings, SOURCES_NOW, output)
+    with browser.new_page() as page:
+        page.goto(url, wait_until="networkidle")
+        page.select_option("#repo", "gitextensions/gitextensions")
+        assert page.locator("#cohort-note").inner_text() == "2 items"
+        cards = page.locator("#streams .stream").filter(has_text="gitextensions/gitextensions")
+        assert cards.count() == 2
+        assert "PR bases: main, release/** only" in cards.last.inner_text()
+        change = page.locator("#changes tr").filter(has_text="#13466")
+        assert change.locator("td").nth(1).inner_text() == "area: worktree"
+        assert change.locator("td").nth(2).inner_text() == "area: merge"
+        assert (
+            change.locator("a").get_attribute("href")
+            == "https://github.com/gitextensions/gitextensions/issues/13466"
+        )
+        assert page.locator("#waiting tr").filter(has_text="#13468").count() == 1
+        day = next(
+            row
+            for row in page.evaluate("dailyRows(data.items.filter(selected))")
+            if row["date"] == "2026-11-20"
+        )
+        assert day["counts"] == {"applied": 1, "human_changed": 1, "no_selection": 1}
+        page.select_option("#repo", "dotnet/extensions")
+        page.select_option("#kind", "pr")
+        assert page.locator("#cohort-note").inner_text() == "1 items"
+        assert (
+            page.locator("#metrics .metric")
+            .filter(has_text="Confirmed labels")
+            .locator(".value")
+            .inner_text()
+            == "1"
+        )
+        for address in (
+            "https://github.com/dotnet/extensions/pull/7972",
+            "https://github.com/gitextensions/gitextensions/pull/13467",
+            "https://github.com/microsoft/aspire/issues/22511",
+            "https://github.com/microsoft/aspire/pull/900001",
+        ):
+            assert page.evaluate("url => safeLink('source',url).tagName", address) == "A"
+        for address in (
+            "https://github.com/dotnet/gitextensions/issues/1",
+            "https://github.com/gitextensions/extensions/issues/1",
+            "https://github.com/other/gitextensions/issues/1",
+            "https://github.com/dotnet/aspire/issues/22511",
+            "https://github.com/microsoft/extensions/issues/7971",
+            "https://github.com/other/aspire/issues/22511",
+            "https://github.com.evil.example/gitextensions/gitextensions/issues/1",
+            "https://github.com/gitextensions/gitextensions/issues/1?next=evil",
+        ):
+            assert page.evaluate("url => safeLink('untrusted',url).tagName", address) == "SPAN"
+        page.select_option("#repo", "microsoft/aspire")
+        page.select_option("#kind", "issue")
+        assert page.locator("#cohort-note").inner_text() == "1 items"
+        waiting = page.locator("#waiting tr").filter(has_text="#22511")
+        assert (
+            waiting.locator("a").get_attribute("href")
+            == "https://github.com/microsoft/aspire/issues/22511"
+        )
+        assert (
+            page.locator("#metrics .metric")
+            .filter(has_text="No label chosen")
+            .locator(".value")
+            .inner_text()
+            == "1"
+        )
+        cards = page.locator("#streams .stream").filter(has_text="microsoft/aspire")
+        assert cards.count() == 2
+        assert "PR bases: main, release/** only" in cards.last.inner_text()
+        page.select_option("#kind", "pr")
+        assert page.locator("#cohort-note").inner_text() == "1 items"
+        assert (
+            page.locator("#metrics .metric")
+            .filter(has_text="Confirmed labels")
+            .locator(".value")
+            .inner_text()
+            == "1"
+        )

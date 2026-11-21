@@ -169,15 +169,19 @@ class Collector:
 
     def retain_item(self, repo, source):
         kind = "pr" if "pull_request" in source else "issue"
-        if not any(s["repo"] == repo and s["kind"] == kind for s in self.enabled):
+        stream = next((s for s in self.enabled if s["repo"] == repo and s["kind"] == kind), None)
+        if stream is None:
             return
         key = f"{repo}:{source['id']}"
         if source["created_at"] < self.state["cohort_start"] and key not in self.state["items"]:
             return
         item = self.state["items"].get(key, {})
         state = source["state"]
+        pr = source.get("pull_request", {})
+        if kind == "pr" and stream.get("base_branches"):
+            pr = self.api.get(f"/repos/{repo}/pulls/{source['number']}")
+            item["base_branch"] = (pr.get("base") or {}).get("ref")
         if kind == "pr" and state == "closed":
-            pr = source["pull_request"]
             if "merged_at" not in pr:
                 pr = self.api.get(f"/repos/{repo}/pulls/{source['number']}")
             state = "merged" if pr.get("merged_at") else "closed"
@@ -191,7 +195,7 @@ class Collector:
             created_at=source["created_at"],
             updated_at=source["updated_at"],
             labels=sorted(
-                label["name"] for label in source["labels"] if relevant_label(label["name"])
+                label["name"] for label in source["labels"] if relevant_label(label["name"], repo)
             ),
             observed_at=self.at,
         )
@@ -258,7 +262,9 @@ class Collector:
         for rows in self.api.pages(f"/repos/{item['repo']}/issues/{item['number']}/timeline"):
             for source in rows:
                 label = (source.get("label") or {}).get("name", "")
-                if source.get("event") not in {"labeled", "unlabeled"} or not relevant_label(label):
+                if source.get("event") not in {"labeled", "unlabeled"} or not relevant_label(
+                    label, item["repo"]
+                ):
                     continue
                 if not source.get("id") or not source.get("created_at"):
                     raise APIError(

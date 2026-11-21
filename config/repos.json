@@ -7,6 +7,12 @@
     {"repo": "dotnet/machinelearning", "kind": "issue", "enabled": true, "workflow_id": 389234232},
     {"repo": "dotnet/machinelearning", "kind": "pr", "enabled": false},
     {"repo": "dotnet/roslyn", "kind": "issue", "enabled": true, "workflow_id": 160813423},
-    {"repo": "dotnet/roslyn", "kind": "pr", "enabled": true, "workflow_id": 160813424}
+    {"repo": "dotnet/roslyn", "kind": "pr", "enabled": true, "workflow_id": 160813424},
+    {"repo": "dotnet/extensions", "kind": "issue", "enabled": true, "workflow_id": 148219063},
+    {"repo": "dotnet/extensions", "kind": "pr", "enabled": true, "workflow_id": 148219064},
+    {"repo": "microsoft/aspire", "kind": "issue", "enabled": true, "workflow_id": 148535306},
+    {"repo": "microsoft/aspire", "kind": "pr", "enabled": true, "workflow_id": 148535307, "base_branches": ["main", "release/**"]},
+    {"repo": "gitextensions/gitextensions", "kind": "issue", "enabled": true, "workflow_id": 149687977},
+    {"repo": "gitextensions/gitextensions", "kind": "pr", "enabled": true, "workflow_id": 149687978, "base_branches": ["main", "release/**"]}
   ]
 }

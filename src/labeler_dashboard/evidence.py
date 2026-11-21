@@ -105,9 +105,9 @@ def parse_log(text: str, repo: str) -> dict:
         for outcome, pattern in patterns:
             for found in re.finditer(pattern, success):
                 is_relevant = (
-                    area_label(found[1])
+                    area_label(found[1], repo)
                     if outcome in {"area_applied", "existing_area_skip"}
-                    else relevant_label(found[1])
+                    else relevant_label(found[1], repo)
                 )
                 if is_relevant and len(found[1]) <= 100:
                     matches.append((found.start(), outcome, found[1]))

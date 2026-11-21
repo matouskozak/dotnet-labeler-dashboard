@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 SCHEMA = 1
+AREA_PREFIXES = {"gitextensions/gitextensions": "area: "}
 
 
 def instant(value: str) -> datetime:
@@ -85,9 +86,10 @@ def safe_github_url(value: str | None, repo: str, resource: str) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(pattern, value) else None
 
 
-def area_label(label: str) -> bool:
-    return label.casefold().startswith("area-") and len(label) > len("area-")
+def area_label(label: str, repo: str = "") -> bool:
+    prefix = AREA_PREFIXES.get(repo, "area-")
+    return label.casefold().startswith(prefix) and bool(label[len(prefix) :].strip())
 
 
-def relevant_label(label: str) -> bool:
-    return area_label(label) or label == "needs-area-label"
+def relevant_label(label: str, repo: str = "") -> bool:
+    return area_label(label, repo) or label == "needs-area-label"

@@ -1,6 +1,7 @@
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import timedelta
+from fnmatch import fnmatchcase
 
 from .evidence import PARSER_VERSION, no_selection
 from .store import area_label, instant, pending_timeline, stamp, stream_key
@@ -106,7 +107,7 @@ def only_existing_area_skips(attempts):
         if not results or any(
             row["outcome"] != "existing_area_skip"
             or not row["action_version"]
-            or not area_label(row["label"] or "")
+            or not area_label(row["label"] or "", attempt["repo"])
             for row in results
         ):
             return False
@@ -303,7 +304,7 @@ def daily_activity(events, attempts, confirmed):
     days = defaultdict(set)
     for event in events:
         day = event["at"][:10]
-        if event["key"] in confirmed and area_label(event["label"]):
+        if event["key"] in confirmed and area_label(event["label"], event["repo"]):
             days[day].add("applied")
         if event["actor_type"] == "User":
             days[day].add("human_changed")
@@ -442,10 +443,20 @@ def report(state, config, now):
         for stream in config["streams"]
     }
     intake_gaps = {key: ExecutionIntervals(runs) for key, runs in unresolved_by_stream.items()}
+    streams = {stream_key(s["repo"], s["kind"]): s for s in config["streams"]}
     for key, item in state["items"].items():
         item_events = events[key]
         item_attempts = attempts[key]
         production_attempts = [row for row in item_attempts if production(row)]
+        key_stream = stream_key(item["repo"], item["kind"])
+        base_branches = streams[key_stream].get("base_branches", [])
+        if (
+            base_branches
+            and item.get("base_branch")
+            and not any(fnmatchcase(item["base_branch"], branch) for branch in base_branches)
+            and not production_attempts
+        ):
+            continue
         if only_existing_area_skips(production_attempts):
             continue
         observed = [
@@ -458,10 +469,9 @@ def report(state, config, now):
         applications = [
             {**event, "run": confirmed[event["key"]]["run"]}
             for event in item_events
-            if event["key"] in confirmed and area_label(event["label"])
+            if event["key"] in confirmed and area_label(event["label"], item["repo"])
         ]
         primary = applications[0] if applications else None
-        key_stream = stream_key(item["repo"], item["kind"])
         progress = state["streams"].get(key_stream, {})
         waiting_since = None
         for event in item_events:
@@ -505,9 +515,10 @@ def report(state, config, now):
                 observation["outcome"] == "application_failure" for observation in observed
             ),
             "unknown": bool(item.get("timeline_availability"))
+            or bool(base_branches and not item.get("base_branch"))
             or not production_attempts
             or any(not supported_terminal_evidence(attempt) for attempt in production_attempts),
-            "needs_area": not any(area_label(label) for label in item["labels"]),
+            "needs_area": not any(area_label(label, item["repo"]) for label in item["labels"]),
             "fallback_marker": "needs-area-label" in item["labels"],
             "timeline_unavailable": bool(item.get("timeline_availability")),
             "activity": daily_activity(item_events, item_attempts, confirmed),
@@ -528,6 +539,8 @@ def report(state, config, now):
                 now,
                 hours,
             )
+            if base_branches and not item.get("base_branch") and row[f"intake_{hours}"]:
+                row[f"intake_{hours}"]["evidence_complete"] = False
         result["items"].append(row)
         result["changes"].extend(label_changes(key, item_events))
     for stream in config["streams"]:
