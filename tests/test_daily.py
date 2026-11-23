@@ -6,6 +6,17 @@ from test_metrics import CONFIG, KEY, fixture, summarize
 from labeler_dashboard.metrics import daily_coverage, reconstruct, report
 from labeler_dashboard.store import instant
 
+# Collected runs record a config when their prediction step ran.
+PREDICTED = [
+    {
+        "threshold": None,
+        "action_sha": None,
+        "action_version": "v2.3.0",
+        "cache_hit": None,
+        "dry_run": False,
+    }
+]
+
 
 def test_daily_counts_deduplicate_retries_and_human_edit_pairs():
     state = fixture()
@@ -126,7 +137,7 @@ def test_daily_coverage_distinguishes_complete_zero_from_missing_history():
         "complete"
     ]
     state["items"][KEY]["observed_through"] = "2026-11-19T12:00:00Z"
-    state["runs"]["run1"]["evidence"] = "unavailable"
+    state["runs"]["run1"].update(evidence="unavailable", gaps=["logs_expired_or_deleted"])
     result = report(state, CONFIG, instant("2026-11-19T12:00:00Z"))
     assert not next(r for r in result["streams"][0]["daily_coverage"] if r["date"] == "2026-11-11")[
         "complete"
@@ -160,6 +171,7 @@ def test_unresolved_rerun_affects_execution_day_not_original_created_day(evidenc
         "completed_at": None if evidence == "pending" else "2026-11-18T12:05:00Z",
         "status": "in_progress" if evidence == "pending" else "completed",
         "collected": evidence != "pending",
+        "configs": PREDICTED,
     }
     rows = summarize(state)["streams"][0]["daily_coverage"]
     days = {row["date"]: row["complete"] for row in rows}
@@ -203,6 +215,7 @@ def test_unresolved_attempt_spanning_midnight_keeps_both_execution_days_partial(
     }
     state["runs"]["run1"].update(
         evidence="unknown",
+        configs=PREDICTED,
         started_at="2026-11-17T23:59:50Z",
         completed_at="2026-11-18T00:01:00Z",
         updated_at="2026-11-18T00:01:00Z",
@@ -255,6 +268,7 @@ def test_missing_prediction_evidence_does_not_make_collected_human_changes_parti
         "collected": evidence != "pending",
         "status": "in_progress" if evidence == "pending" else "completed",
         "completed_at": None if evidence == "pending" else state["runs"]["run1"]["completed_at"],
+        "configs": PREDICTED,
     }
     result = summarize(state)
     day = next(row for row in result["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11")
@@ -272,6 +286,37 @@ def test_missing_prediction_evidence_does_not_make_collected_human_changes_parti
     assert result["items"][0]["activity"] == summarize(covered_state())["items"][0]["activity"]
     assert result["changes"] == summarize(covered_state())["changes"]
     assert result["streams"][0]["collection_caught_up"]
+
+
+@pytest.mark.parametrize(
+    "conclusion,evidence",
+    [
+        ("action_required", "unknown"),
+        ("startup_failure", "unknown"),
+        ("failure", "technical_failure"),
+        ("success", "unknown"),
+    ],
+)
+def test_run_that_never_ran_prediction_does_not_make_daily_predictions_partial(
+    conclusion, evidence
+):
+    # Like dotnet/runtime run 40508872547: no jobs ran, but updated_at moved nine days later.
+    state = covered_state()
+    state["runs"]["gap"] = {
+        **state["runs"]["run1"],
+        "conclusion": conclusion,
+        "evidence": evidence,
+        "completed_at": None,
+        "updated_at": "2026-11-18T09:00:00Z",
+    }
+    stream = summarize(state)["streams"][0]
+    assert [row["date"] for row in stream["daily_coverage"] if not row["complete"]] == [
+        "2026-11-19"
+    ]
+    assert sum(stream["prediction_results"].values()) == 1
+    state["runs"]["gap"]["configs"] = PREDICTED
+    days = {row["date"]: row for row in summarize(state)["streams"][0]["daily_coverage"]}
+    assert days["2026-11-15"]["partial_reason"]["applied"] == "results_missing"
 
 
 @pytest.mark.parametrize("missing", ["intake", "timeline", "run_history"])

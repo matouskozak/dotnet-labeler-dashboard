@@ -345,6 +345,15 @@ def test_collected_history_with_prediction_gaps_has_independent_chart_lines_and_
             "conclusion": conclusion,
             "collected": status == "completed",
         }
+    state["runs"]["unknown"]["configs"] = [
+        {
+            "threshold": None,
+            "action_sha": None,
+            "action_version": "v2.3.0",
+            "cache_hit": None,
+            "dry_run": False,
+        }
+    ]
     state["errors"]["historic"] = {
         "stage": "collector",
         "message": "Previous request failed",

@@ -89,11 +89,24 @@ def intake_run_unresolved(run):
     )
 
 
+def prediction_ran(run):
+    # Collection records a config or log gap for every prediction step that was not skipped.
+    return bool(run.get("configs") or run.get("gaps"))
+
+
 def daily_run_unresolved(run):
-    return automatic_run(run) and run.get("status") != "queued" and (
-        not run["collected"]
-        or run["evidence"] not in {"item_results", "no_work"}
-        or any(not config["action_version"] for config in run.get("configs", []))
+    return (
+        automatic_run(run)
+        and run.get("status") != "queued"
+        and (
+            not run["collected"]
+            or run["evidence"] == "parser_upgrade_pending"
+            or prediction_ran(run)
+            and (
+                run["evidence"] not in {"item_results", "no_work"}
+                or any(not config["action_version"] for config in run.get("configs", []))
+            )
+        )
     )
 
 
