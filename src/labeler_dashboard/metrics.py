@@ -4,7 +4,14 @@ from datetime import timedelta
 from fnmatch import fnmatchcase
 
 from .evidence import PARSER_VERSION, no_selection
-from .store import area_label, instant, pending_timeline, stamp, stream_key
+from .store import (
+    area_label,
+    instant,
+    pending_timeline,
+    stamp,
+    stream_key,
+    timeline_coverage_through,
+)
 
 
 def production(attempt):
@@ -170,11 +177,10 @@ def reconstruct(state):
     return events, attempts, confirmed
 
 
-def removal_followup(item, application, events, now, days):
+def removal_followup(application, events, now, days, through):
     if not application:
         return None
     deadline = instant(application["at"]) + timedelta(days=days)
-    through = item.get("observed_through")
     if now < deadline or not through or instant(through) < deadline:
         return None
     return any(
@@ -238,7 +244,9 @@ def label_changes(item_key, events):
     return rows
 
 
-def intake_view(item, events, attempts, applications, progress, run_gaps, run_lookup, now, hours):
+def intake_view(
+    item, events, attempts, applications, progress, run_gaps, run_lookup, now, hours, through
+):
     deadline = instant(item["created_at"]) + timedelta(hours=hours)
     if now < deadline:
         return None
@@ -249,7 +257,7 @@ def intake_view(item, events, attempts, applications, progress, run_gaps, run_lo
     )
     complete = bool(
         covered
-        and (item.get("observed_through") or "") >= end
+        and (through or "") >= end
         and not run_gaps.overlaps(item["created_at"], upper)
         and not any(
             production(attempt)
@@ -324,6 +332,7 @@ def daily_coverage(state, stream, items, runs, now):
     day = start.replace(hour=0, minute=0, second=0, microsecond=0)
     progress = state["streams"].get(stream_key(stream["repo"], stream["kind"]), {})
     intake = state["repositories"].get(stream["repo"], {})
+    timelines = [(item["created_at"], timeline_coverage_through(item, intake)) for item in items]
     run_gaps = ExecutionIntervals(run for run in runs if daily_run_unresolved(run))
     unresolved_attempts = []
     for attempt in state["attempts"].values():
@@ -347,11 +356,7 @@ def daily_coverage(state, stream, items, runs, now):
             full_day
             and intake.get("intake_complete")
             and (intake.get("updated_checkpoint") or "") >= upper
-            and all(
-                (item.get("observed_through") or "") >= upper
-                for item in items
-                if item["created_at"] < upper
-            )
+            and all((through or "") >= upper for created, through in timelines if created < upper)
         )
         complete = bool(
             history_complete
@@ -473,6 +478,7 @@ def report(state, config, now):
         ]
         primary = applications[0] if applications else None
         progress = state["streams"].get(key_stream, {})
+        through = timeline_coverage_through(item, state["repositories"].get(item["repo"], {}))
         waiting_since = None
         for event in item_events:
             if event["label"] == "needs-area-label":
@@ -487,6 +493,7 @@ def report(state, config, now):
             "created_at": item["created_at"],
             "labels": item["labels"],
             "observed_through": item.get("observed_through"),
+            "timeline_coverage_through": through,
             "attempt_count": len(item_attempts),
             "production_attempt_count": len(production_attempts),
             "confirmed": bool(primary),
@@ -524,8 +531,8 @@ def report(state, config, now):
             "activity": daily_activity(item_events, item_attempts, confirmed),
             "waiting_since": waiting_since,
             "original_outcome": observed[0]["outcome"] if observed else "no_observed_result",
-            "removal_7": removal_followup(item, primary, item_events, now, 7),
-            "removal_30": removal_followup(item, primary, item_events, now, 30),
+            "removal_7": removal_followup(primary, item_events, now, 7, through),
+            "removal_30": removal_followup(primary, item_events, now, 30, through),
         }
         for hours in (1, 24):
             row[f"intake_{hours}"] = intake_view(
@@ -538,6 +545,7 @@ def report(state, config, now):
                 state["runs"],
                 now,
                 hours,
+                through,
             )
             if base_branches and not item.get("base_branch") and row[f"intake_{hours}"]:
                 row[f"intake_{hours}"]["evidence_complete"] = False

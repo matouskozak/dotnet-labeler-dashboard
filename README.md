@@ -59,7 +59,7 @@ automatic application. A successful application followed by a cleanup failure
 retains both observations.
 
 Human removal follow-up uses the first confirmed area application per item.
-The 7/30-day denominator requires both elapsed time and a fully fetched timeline
+The 7/30-day denominator requires both elapsed time and verified timeline coverage
 through that deadline. Insufficient mature evidence is not zero. A human addition
 without removal is not a correction. Human actors are not assumed to be maintainers.
 
@@ -142,6 +142,14 @@ as an unlimited archive. Full per-item timelines are authoritative.
 Incremental pagination sorts newest updates first, so an already-read item moving
 to the front cannot displace an unread quiet item out of subsequent pages.
 
+A completed, error-free intake scan can extend coverage for an already fetched
+timeline when the item's `updated_at` still matches `timeline_source_updated`.
+This applies to closed items too. Missing timelines, pending reconciliation,
+unavailable items, and timeline or intake errors prevent that inference. Daily
+coverage, intake windows, and removal follow-up use the corroborated coverage.
+Raw `observed_through` remains the last complete timeline fetch. The report's
+separate `timeline_coverage_through` never creates events or changes fetch times.
+
 An unavailable or redirected timeline is not assumed to be deleted. Only after
 healthy source-level preflight, it gets two bounded retries (after one hour and
 one day), then an explicit unavailable marker. A newly observed item update or
@@ -201,7 +209,9 @@ sanitized endpoint/status details, never response bodies or signed URLs.
 
 ## GitHub Actions and Pages
 
-`refresh.yml` runs hourly at minute 17 and on manual dispatch. One concurrency
+`refresh.yml` is scheduled hourly at minute 17 and supports manual dispatch.
+GitHub may delay or skip scheduled starts, so collection is not guaranteed hourly.
+One concurrency
 group serializes collection, normal non-force data pushes, and deployment.
 It persists the data branch before rendering and deploying a Pages artifact.
 Source commits do not contain monitoring updates. CI runs pytest and Ruff.
@@ -240,6 +250,15 @@ no new build occurs. Backfill, source freshness, and timeline coverage are shown
 separately.
 
 ### Browser caching
+
+An open dashboard checks for new data every five minutes while visible and when
+returning to the tab. It keeps repository/type/period selections, open details,
+scroll position, and focus where the same control still exists. Unchanged reports
+do not rerender the tables or chart. Requests do not overlap and time out after
+20 seconds. Older or invalid reports are rejected. A failed refresh keeps the last
+valid report visible, shows its data timestamp with a warning, and retries later.
+These browser checks load already published data. They do not trigger collection
+or guarantee that GitHub has run the hourly workflow.
 
 The generated HTML versions JS and CSS URLs by a hash of their contents.
 New clients read `data-v2.json`. The public v2 contract is additive: new fields

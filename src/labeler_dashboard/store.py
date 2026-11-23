@@ -79,6 +79,25 @@ def pending_timeline(item):
     )
 
 
+def timeline_coverage_through(item, repository):
+    through = item.get("observed_through")
+    checkpoint = repository.get("updated_checkpoint")
+    if (
+        through
+        and checkpoint
+        and repository.get("intake_complete")
+        and repository.get("last_success") == checkpoint
+        and not repository.get("last_error")
+        and item.get("updated_at")
+        and item["updated_at"] <= through
+        and not pending_timeline(item)
+        and not item.get("timeline_availability")
+    ):
+        # A complete updated-since scan corroborates an unchanged, fully fetched revision.
+        return max(through, checkpoint)
+    return through
+
+
 def safe_github_url(value: str | None, repo: str, resource: str) -> str | None:
     import re
 

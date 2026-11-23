@@ -1,6 +1,10 @@
 "use strict";
 let data;
-const $ = id => document.getElementById(id);
+let renderRoot;
+let refreshError = null;
+let refreshInFlight = false;
+let lastPayload;
+const $ = id => renderRoot ? renderRoot.querySelector(`#${id}`) : document.getElementById(id);
 const node = (tag, text, className) => {
   const element = document.createElement(tag);
   if (text !== undefined) element.textContent = String(text);
@@ -179,6 +183,14 @@ function collectionCaughtUp(stream) {
 }
 function freshness() {
   const banner = $("freshness");
+  if (refreshError) {
+    banner.className = `notice ${data ? "warning" : "failure"}`;
+    banner.textContent = data
+      ? `Refresh failed: ${refreshError}. Showing data through ${date(data.data_as_of)}. Will retry.`
+      : `Could not load data: ${refreshError}. Will retry.`;
+    return;
+  }
+  if (!data) return;
   const elapsed = data.data_as_of ? (Date.now() - new Date(data.data_as_of)) / 1000 : null;
   const checks = Object.values(data.permissions).flatMap(repo => Object.values(repo.checks));
   const denied = checks.some(check => !check.ok && check.state !== "unverified");
@@ -311,18 +323,146 @@ function render() {
   if (!data.errors.length) $("errors").append(node("p", "None recorded.", "caption"));
   freshness();
 }
-fetch("data-v2.json", {cache: "no-store"}).then(response => {
-  if (!response.ok) throw new Error(`Data request failed (${response.status})`);
-  return response.json();
-}).then(value => {
-  if (![1, 2].includes(value.schema)) throw new Error("Unsupported data format");
-  data = value;
-  $("repo").replaceChildren(new Option("All repositories", ""),
-    ...[...new Set(data.streams.map(stream => stream.repo))].map(repo => new Option(repo, repo)));
-  for (const id of ["repo", "kind", "cohort"]) $(id).addEventListener("change", render);
-  render();
-  setInterval(freshness, 60000);
-}).catch(error => {
-  $("freshness").className = "notice failure";
-  $("freshness").textContent = `Could not load data: ${error.message}.`;
+function validateReport(value) {
+  const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
+  const text = v => typeof v === "string";
+  const boolean = v => typeof v === "boolean";
+  const count = v => Number.isInteger(v) && v >= 0;
+  const timestamp = v => text(v) && Number.isFinite(Date.parse(v));
+  const day = v => timestamp(v) && /^\d{4}-\d\d-\d\d$/.test(v);
+  const nullable = (v, check) => v == null || check(v);
+  const array = (v, check) => Array.isArray(v) && v.every(check);
+  const counts = v => object(v) && Object.values(v).every(count);
+  const intake = v => v === null || (object(v) && text(v.status) && boolean(v.evidence_complete));
+  const optional = (v, key, check) => !(key in v) || check(v[key]);
+  if (!object(value) || ![1, 2].includes(value.schema)) throw new Error("Unsupported data format");
+  const valid = timestamp(value.built_at) && "data_as_of" in value && nullable(value.data_as_of, timestamp) &&
+    nullable(value.cohort_start, timestamp) && nullable(value.last_refresh_attempt, timestamp) &&
+    array(value.items, item => object(item) && text(item.key) && text(item.repo) &&
+      ["issue", "pr"].includes(item.kind) && count(item.number) && text(item.state) &&
+      nullable(item.url, text) && timestamp(item.created_at) && array(item.labels, text) &&
+      ["confirmed", "probable", "fallback", "technical_failure", "unknown", "needs_area", "fallback_marker"]
+        .every(key => boolean(item[key])) &&
+      optional(item, "no_selection", boolean) && text(item.original_outcome) &&
+      nullable(item.waiting_since, timestamp) && nullable(item.observed_through, timestamp) &&
+      ["removal_7", "removal_30"].every(key => item[key] === null || boolean(item[key])) &&
+      intake(item.intake_1) && intake(item.intake_24) &&
+      optional(item, "activity", rows => array(rows, row =>
+        object(row) && day(row.date) && array(row.series, text)))) &&
+    array(value.changes, change => object(change) && text(change.item) && timestamp(change.at) &&
+      nullable(change.actor, text) && (
+        (array(change.before, text) && array(change.after, text)) ||
+        (value.schema === 1 && text(change.category) && nullable(change.label, text) &&
+          nullable(change.replacement, text)))) &&
+    array(value.streams, stream => object(stream) && text(stream.repo) &&
+      ["issue", "pr"].includes(stream.kind) && boolean(stream.enabled) &&
+      boolean(stream.intake_complete) &&
+      ["items", "timelines", "pending_timelines", "run_attempts"].every(key => count(stream[key])) &&
+      counts(stream.run_evidence) && counts(stream.failure_phases) &&
+      ["backfill_to", "live_to", "intake_as_of"].every(key => nullable(stream[key], timestamp)) &&
+      nullable(stream.last_success, timestamp) && nullable(stream.oldest_retry_check, timestamp) &&
+      nullable(stream.last_error, text) &&
+      optional(stream, "collection_caught_up", boolean) &&
+      optional(stream, "production_incomplete_runs", count) &&
+      optional(stream, "base_branches", rows => array(rows, text)) &&
+      optional(stream, "prediction_results", counts) &&
+      optional(stream, "daily_coverage", rows => array(rows, row => object(row) &&
+        day(row.date) && boolean(row.complete) &&
+        optional(row, "series_complete", v => object(v) && Object.values(v).every(boolean)) &&
+        optional(row, "partial_reason", v => object(v) && Object.values(v).every(r => nullable(r, text)))))) &&
+    array(value.configurations, config => object(config) && text(config.repo) && text(config.kind) &&
+      count(config.run_attempts) && nullable(config.branch, text) &&
+      nullable(config.action_version, text) && nullable(config.action_sha, text) &&
+      nullable(config.threshold, v => typeof v === "number" && Number.isFinite(v)) &&
+      nullable(config.cache_hit, boolean)) &&
+    array(value.errors, error => object(error) && text(error.stage) && text(error.message) &&
+      timestamp(error.last_seen) && count(error.count)) &&
+    object(value.permissions) && Object.values(value.permissions).every(permission =>
+      object(permission) && timestamp(permission.checked_at) && object(permission.checks) &&
+      Object.values(permission.checks).every(check => object(check) && boolean(check.ok) &&
+        nullable(check.reason, text)));
+  if (!valid) throw new Error("Invalid dashboard data");
+  const keys = new Set(value.items.map(item => item.key));
+  if (keys.size !== value.items.length || value.changes.some(change => !keys.has(change.item))) {
+    throw new Error("Invalid dashboard item references");
+  }
+}
+function applyReport(value) {
+  const current = document.querySelector("main");
+  const next = current.cloneNode(true);
+  const filters = Object.fromEntries(["repo", "kind", "cohort"].map(id => [id, $(id).value]));
+  const scroll = [window.scrollX, window.scrollY];
+  const focused = document.activeElement;
+  const focusSelector = !current.contains(focused) ? null
+    : focused.id ? `#${CSS.escape(focused.id)}`
+    : focused.matches("summary") ? "summary"
+    : focused.matches("a[href]") ? `a[href="${CSS.escape(focused.getAttribute("href"))}"]`
+    : focused.hasAttribute("aria-label") ? `[aria-label="${CSS.escape(focused.getAttribute("aria-label"))}"]`
+    : null;
+  const previous = data;
+  try {
+    // Render off-document so an invalid update cannot mix old and new report sections.
+    renderRoot = next;
+    data = value;
+    const repos = [...new Set(value.streams.map(stream => stream.repo))];
+    if (filters.repo && !repos.includes(filters.repo)) repos.push(filters.repo);
+    $("repo").replaceChildren(new Option("All repositories", ""),
+      ...repos.map(repo => new Option(repo, repo)));
+    for (const [id, selection] of Object.entries(filters)) $(id).value = selection;
+    render();
+  } catch (error) {
+    data = previous;
+    throw error;
+  } finally {
+    renderRoot = undefined;
+  }
+  current.replaceWith(next);
+  if (focusSelector) next.querySelector(focusSelector)?.focus({preventScroll: true});
+  window.scrollTo(...scroll);
+}
+async function refreshData() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch("data-v2.json", {cache: "no-store", signal: controller.signal});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.text();
+    if (controller.signal.aborted) throw new Error("Request timed out");
+    if (payload !== lastPayload) {
+      let value;
+      try {
+        value = JSON.parse(payload);
+      } catch {
+        throw new Error("Invalid dashboard JSON");
+      }
+      validateReport(value);
+      if (data && (Date.parse(value.built_at) < Date.parse(data.built_at) ||
+        (data.data_as_of && value.data_as_of && Date.parse(value.data_as_of) < Date.parse(data.data_as_of)))) {
+        throw new Error("Server returned an older snapshot");
+      }
+      refreshError = null;
+      applyReport(value);
+      lastPayload = payload;
+    }
+    refreshError = null;
+  } catch (error) {
+    refreshError = controller.signal.aborted ? "Request timed out" : error.message;
+  } finally {
+    clearTimeout(timeout);
+    refreshInFlight = false;
+    freshness();
+  }
+}
+document.addEventListener("change", event => {
+  if (data && ["repo", "kind", "cohort"].includes(event.target.id)) render();
 });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshData();
+});
+setInterval(() => {
+  if (!document.hidden) refreshData();
+}, 5 * 60000);
+setInterval(freshness, 60000);
+refreshData();
