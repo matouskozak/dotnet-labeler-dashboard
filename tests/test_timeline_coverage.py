@@ -145,7 +145,7 @@ def test_partial_incremental_scan_cannot_extend_timeline_coverage(failure):
     assert state["items"][KEY]["observed_through"] == FRIDAY
 
 
-def test_real_prediction_gaps_remain_after_timeline_coverage_is_corroborated():
+def test_queued_run_does_not_make_daily_predictions_partial_after_timeline_coverage():
     state = weekend_state()
     state["cohort_start"] = "2026-10-20T12:00:00Z"
     state["runs"]["queued"] = {
@@ -163,10 +163,14 @@ def test_real_prediction_gaps_remain_after_timeline_coverage_is_corroborated():
         for row in report(state, CONFIG, instant(MONDAY))["streams"][0]["daily_coverage"]
     }
     assert days["2026-11-22"]["series_complete"] == {
-        "applied": False,
-        "no_selection": False,
+        "applied": True,
+        "no_selection": True,
         "human_changed": True,
     }
-    assert days["2026-11-22"]["partial_reason"]["applied"] == "results_missing"
+    assert days["2026-11-22"]["partial_reason"] == {
+        "applied": None,
+        "no_selection": None,
+        "human_changed": None,
+    }
     assert not any(days["2026-10-20"]["series_complete"].values())
     assert not any(days["2026-11-23"]["series_complete"].values())

@@ -86,9 +86,11 @@ that period. The 7/30-day selections use UTC calendar days, including today.
 Dashed lines and hollow points are partial observed counts. Human-change coverage
 requires complete intake and timelines for the tracked items on that UTC day,
 not predictor logs. Applied/no-selection coverage also requires discovered run
-history and usable prediction evidence. Each line shows zero only when its own
-coverage is complete. Partial first days, today, and missing history stay partial
-or unknown, not zero.
+history and usable prediction evidence. Runs still queued before any job starts
+remain in workflow status but do not make daily prediction counts partial.
+Unresolved runs that have started work affect only their recorded execution
+interval. Each line shows zero only when its own coverage is complete. Partial
+first days, today, and missing history stay partial or unknown, not zero.
 
 These are counts for the currently tracked cohort, not a promise that future
 evidence will never change membership. Unknown/no-run items remain included.

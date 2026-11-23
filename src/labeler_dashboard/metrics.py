@@ -48,7 +48,6 @@ def automatic_run(run):
 
 
 def execution_bounds(run):
-    # created_at/updated_at only bound an unknown execution, never identify its day.
     start = run.get("started_at") or run.get("created_at")
     end = run.get("completed_at")
     if not end and (run.get("status") == "completed" or run.get("collected")):
@@ -91,11 +90,15 @@ def intake_run_unresolved(run):
 
 
 def daily_run_unresolved(run):
-    return automatic_run(run) and (
+    return automatic_run(run) and run.get("status") != "queued" and (
         not run["collected"]
         or run["evidence"] not in {"item_results", "no_work"}
         or any(not config["action_version"] for config in run.get("configs", []))
     )
+
+
+def daily_execution(run):
+    return {**run, "completed_at": run.get("completed_at") or run.get("updated_at")}
 
 
 def attempt_overlaps(attempt, run, lower, upper):
@@ -333,7 +336,8 @@ def daily_coverage(state, stream, items, runs, now):
     progress = state["streams"].get(stream_key(stream["repo"], stream["kind"]), {})
     intake = state["repositories"].get(stream["repo"], {})
     timelines = [(item["created_at"], timeline_coverage_through(item, intake)) for item in items]
-    run_gaps = ExecutionIntervals(run for run in runs if daily_run_unresolved(run))
+    daily_runs = [daily_execution(run) for run in runs]
+    run_gaps = ExecutionIntervals(run for run in daily_runs if daily_run_unresolved(run))
     unresolved_attempts = []
     for attempt in state["attempts"].values():
         run = state["runs"].get(attempt["run"], {})
@@ -343,7 +347,7 @@ def daily_coverage(state, stream, items, runs, now):
         ):
             continue
         if not supported_terminal_evidence(attempt):
-            unresolved_attempts.append((attempt, run))
+            unresolved_attempts.append((attempt, daily_execution(run)))
     coverage = []
     while day <= now:
         end = day + timedelta(days=1)
