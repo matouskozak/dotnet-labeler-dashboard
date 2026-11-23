@@ -15,7 +15,8 @@ The dashboard separates confirmed area applications, explicit no-selection resul
 application failures, and unknown evidence. It shows dashboard cohort items
 currently lacking an area label (with or without a fallback marker or observed
 run), human area changes, fallback resolutions, and bot
-reapplications. It does **not** claim prediction accuracy, precision, or exact
+reapplications. Each coverage card shows the `dotnet/issue-labeler` version used by
+the stream's latest automatic run (short SHA when the version is not recognized). It does **not** claim prediction accuracy, precision, or exact
 scoring coverage.
 
 Area-label recognition is case-insensitive, while original spelling is preserved

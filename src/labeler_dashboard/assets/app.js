@@ -224,6 +224,7 @@ function render() {
       const cohortItems = items.filter(item => item.repo === stream.repo && item.kind === stream.kind);
       card.append(node("p", `${cohortItems.length} selected / ${stream.items} collected items`),
         node("p", `${stream.timelines} timelines / ${stream.pending_timelines} pending`));
+      if (stream.labeler_sha) card.append(node("p", `issue-labeler ${stream.labeler_version || stream.labeler_sha.slice(0, 7)}`));
       if (stream.base_branches) card.append(node("p", `PR bases: ${stream.base_branches.join(", ")} only`));
       const results = stream.prediction_results;
       if (results) {
@@ -365,6 +366,8 @@ function validateReport(value) {
       optional(stream, "collection_caught_up", boolean) &&
       optional(stream, "production_incomplete_runs", count) &&
       optional(stream, "base_branches", rows => array(rows, text)) &&
+      optional(stream, "labeler_version", v => nullable(v, text)) &&
+      optional(stream, "labeler_sha", v => nullable(v, text)) &&
       optional(stream, "prediction_results", counts) &&
       optional(stream, "daily_coverage", rows => array(rows, row => object(row) &&
         day(row.date) && boolean(row.complete) &&

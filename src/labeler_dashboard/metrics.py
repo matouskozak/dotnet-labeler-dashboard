@@ -613,10 +613,22 @@ def report(state, config, now):
                 "stale",
             }
         }
+        latest_action = max(
+            (
+                (run.get("created_at") or "", config)
+                for run in production_runs
+                for config in run.get("configs", [])
+                if config["action_sha"]
+            ),
+            key=lambda pair: pair[0],
+            default=(None, {}),
+        )[1]
         result["streams"].append(
             {
                 **stream,
                 **progress,
+                "labeler_version": latest_action.get("action_version"),
+                "labeler_sha": latest_action.get("action_sha"),
                 "intake_complete": repo_progress.get("intake_complete", False),
                 "intake_as_of": repo_progress.get("updated_checkpoint"),
                 "feed_gap": repo_progress.get("feed_gap", False),

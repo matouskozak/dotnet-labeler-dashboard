@@ -195,6 +195,11 @@ def test_colon_prefix_flows_through_collection_confirmation_history_daily_and_sk
         and c["threshold"] == 0.4
         for c in output["configurations"]
     )
+    for stream in output["streams"]:
+        if stream["enabled"] and stream["run_attempts"]:
+            assert stream["labeler_version"] == (
+                "v2.2.0" if stream["repo"] == "microsoft/aspire" else "v2.0.0"
+            )
 
 
 def test_deterministic_triage_and_skipped_predictor_do_not_invent_model_evidence():
