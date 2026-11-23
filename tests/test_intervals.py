@@ -60,11 +60,13 @@ def test_merged_intervals_match_linear_scan_with_unknown_and_open_execution_boun
 
 
 @pytest.mark.parametrize(
-    "kind", ["pending", "unknown", "unavailable", "manual", "dry_run", "known", "failure"]
+    "kind", ["pending", "queued", "unknown", "unavailable", "manual", "dry_run", "known", "failure"]
 )
 def test_index_filters_preserve_different_intake_and_daily_criteria(kind):
     run = unresolved("2026-11-18T12:00:00Z", "2026-11-18T12:05:00Z")
-    if kind in {"unknown", "unavailable"}:
+    if kind == "queued":
+        run.update(status="queued")
+    elif kind in {"unknown", "unavailable"}:
         run.update(collected=True, evidence=kind)
     elif kind == "manual":
         run["manual"] = True
@@ -77,7 +79,7 @@ def test_index_filters_preserve_different_intake_and_daily_criteria(kind):
     lower, upper = "2026-11-18T00:00:00Z", "2026-11-19T00:00:00Z"
     intake = metrics.ExecutionIntervals(r for r in [run] if metrics.intake_run_unresolved(r))
     daily = metrics.ExecutionIntervals(r for r in [run] if metrics.daily_run_unresolved(r))
-    assert intake.overlaps(lower, upper) is (kind in {"pending", "unknown", "unavailable"})
+    assert intake.overlaps(lower, upper) is (kind in {"pending", "queued", "unknown", "unavailable"})
     assert daily.overlaps(lower, upper) is (
         kind in {"pending", "unknown", "unavailable", "failure"}
     )

@@ -214,6 +214,28 @@ def test_unresolved_attempt_spanning_midnight_keeps_both_execution_days_partial(
     assert not days["2026-11-18"]
 
 
+def test_unresolved_run_only_makes_observed_execution_days_partial():
+    state = covered_state()
+    state["runs"]["run1"].update(
+        evidence="pending",
+        collected=False,
+        status="in_progress",
+        started_at="2026-11-17T23:59:50Z",
+        completed_at=None,
+        updated_at="2026-11-18T00:01:00Z",
+    )
+    state["attempts"]["a1"]["observations"][0].update(
+        outcome="unsupported",
+        action_version=None,
+        step_start="2026-11-17T23:59:50Z",
+        step_end=None,
+    )
+    days = {row["date"]: row for row in summarize(state)["streams"][0]["daily_coverage"]}
+    assert days["2026-11-17"]["partial_reason"]["applied"] == "results_missing"
+    assert days["2026-11-18"]["partial_reason"]["applied"] == "results_missing"
+    assert days["2026-11-19"]["partial_reason"]["applied"] == "partial_day"
+
+
 def covered_state():
     state = fixture()
     state["cohort_start"] = "2026-11-10T00:00:00Z"
@@ -231,7 +253,7 @@ def test_missing_prediction_evidence_does_not_make_collected_human_changes_parti
         **state["runs"]["run1"],
         "evidence": evidence,
         "collected": evidence != "pending",
-        "status": "queued" if evidence == "pending" else "completed",
+        "status": "in_progress" if evidence == "pending" else "completed",
         "completed_at": None if evidence == "pending" else state["runs"]["run1"]["completed_at"],
     }
     result = summarize(state)

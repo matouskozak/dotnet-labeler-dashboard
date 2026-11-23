@@ -52,7 +52,7 @@ def test_old_queued_window_persists_then_discovers_next_window_and_audits_comple
     before_audit = report(c.state, CONFIG, NOW)
     coverage = next(s for s in before_audit["streams"] if s["kind"] == "issue")
     assert coverage["production_incomplete_runs"] == 1
-    assert not next(day for day in coverage["daily_coverage"] if day["date"] == "2026-11-11")[
+    assert next(day for day in coverage["daily_coverage"] if day["date"] == "2026-11-11")[
         "complete"
     ]
     c.api.get.return_value = queued
