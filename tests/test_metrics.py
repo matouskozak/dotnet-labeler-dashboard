@@ -68,6 +68,7 @@ def fixture():
         "completed_at": "2026-11-11T14:03:00Z",
         "updated_at": "2026-11-11T14:03:00Z",
         "status": "completed",
+        "branch": "main",
         "last_checked_at": AT,
         "collected": True,
         "evidence": "item_results",
