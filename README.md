@@ -65,7 +65,10 @@ The 7/30-day denominator requires both elapsed time and verified timeline covera
 through that deadline. Insufficient mature evidence is not zero. A human addition
 without removal is not a correction. Human actors are not assumed to be maintainers.
 
-The **Label changes** table shows factual before/after label sets, who changed
+The **Label changes** table defaults to human edits after a confirmed labeler
+application (including fallback). The table counts displayed edits, while the
+chart counts each changed item once per UTC day. Select **All label changes**
+to include manual triage and bot reapplications. Both views show before/after label sets, who changed
 them, and when. It replays the ordered timeline independently of prediction logs,
 so missing run evidence does not hide a known earlier label. It includes human
 edits and bot reapplications. Empty label sets appear as **No area label**, and

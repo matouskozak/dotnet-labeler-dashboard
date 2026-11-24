@@ -279,9 +279,11 @@ function render() {
     $("waiting").append(tr);
   }
   if (!waiting.length) emptyTable("waiting", 6, "None recorded in this period.");
-  const changes = data.changes.filter(change => itemIndex.has(change.item)).sort((a, b) => b.at.localeCompare(a.at));
+  const allChanges = $("change-scope").value === "all";
+  const changes = data.changes.filter(change => itemIndex.has(change.item) &&
+    (allChanges || change.human_after_application === true)).sort((a, b) => b.at.localeCompare(a.at));
   $("changes").replaceChildren();
-  $("changes-count").textContent = `${changes.length} changes`;
+  $("changes-count").textContent = `${changes.length} ${changes.length === 1 ? "edit" : "edits"}`;
   for (const change of changes) {
     const item = itemIndex.get(change.item);
     const tr = node("tr");
@@ -351,7 +353,7 @@ function validateReport(value) {
       optional(item, "activity", rows => array(rows, row =>
         object(row) && day(row.date) && array(row.series, text)))) &&
     array(value.changes, change => object(change) && text(change.item) && timestamp(change.at) &&
-      nullable(change.actor, text) && (
+      nullable(change.actor, text) && optional(change, "human_after_application", boolean) && (
         (array(change.before, text) && array(change.after, text)) ||
         (value.schema === 1 && text(change.category) && nullable(change.label, text) &&
           nullable(change.replacement, text)))) &&
@@ -463,7 +465,7 @@ async function refreshData() {
   }
 }
 document.addEventListener("change", event => {
-  if (data && ["repo", "kind", "cohort"].includes(event.target.id)) render();
+  if (data && ["repo", "kind", "cohort", "change-scope"].includes(event.target.id)) render();
 });
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshData();

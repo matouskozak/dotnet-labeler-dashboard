@@ -113,6 +113,7 @@ def test_confirmed_application_removal_and_unambiguous_replacement():
             "item": KEY,
             "at": "2026-11-11T14:03:01Z",
             "actor": "human",
+            "human_after_application": True,
             "before": ["area-Infrastructure"],
             "after": ["area-Trainers"],
         }
@@ -352,6 +353,7 @@ def test_runtime_137854_three_second_edit_shows_original_label_without_run_evide
             "item": KEY,
             "at": "2026-11-18T19:52:34Z",
             "actor": "jkotas",
+            "human_after_application": False,
             "before": [old_label],
             "after": [new_label],
         }

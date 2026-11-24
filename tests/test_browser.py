@@ -135,6 +135,8 @@ def test_new_client_reads_legacy_rows_without_inventing_full_label_states(site, 
     (output / "data-v2.json").write_text(json.dumps(payload))
     with browser.new_page() as page:
         page.goto(url, wait_until="networkidle")
+        assert page.locator("#changes-count").inner_text() == "0 edits"
+        page.select_option("#change-scope", "all")
         cells = page.locator("#changes tr td")
         assert cells.nth(1).inner_text() == "Unknown"
         assert cells.nth(2).inner_text() == "Added area-Trainers"
