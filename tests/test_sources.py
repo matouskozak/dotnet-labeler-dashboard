@@ -174,6 +174,7 @@ def test_colon_prefix_flows_through_collection_confirmation_history_daily_and_sk
         "at": "2026-11-20T19:00:02Z",
         "before": ["area: worktree"],
         "after": ["area: merge"],
+        "human_after_application": True,
     }
     assert ("gitextensions/gitextensions", 13467) not in items
     state["items"][applied["key"]]["observed_through"] = "2026-11-28T07:00:00Z"

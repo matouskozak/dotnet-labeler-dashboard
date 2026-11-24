@@ -83,7 +83,9 @@ def test_human_edit_counts_only_after_labeler_application():
         "label": "area-Other",
     }
     state["events"]["e2"]["at"] = state["events"]["e3"]["at"] = "2026-11-12T12:00:00Z"
-    assert summarize(state)["items"][0]["activity"] == [
+    result = summarize(state)
+    assert [row["human_after_application"] for row in result["changes"]] == [False, True]
+    assert result["items"][0]["activity"] == [
         {"date": "2026-11-11", "series": ["applied"]},
         {"date": "2026-11-12", "series": ["human_changed"]},
     ]

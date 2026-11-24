@@ -197,6 +197,7 @@ def test_roslyn_collection_keeps_case_and_feeds_confirmation_changes_daily_and_s
         "item": applied["key"],
         "before": ["Area-Compilers"],
         "after": ["Area-IDE"],
+        "human_after_application": True,
         "actor": "human",
         "at": "2026-11-20T00:01:02Z",
     }

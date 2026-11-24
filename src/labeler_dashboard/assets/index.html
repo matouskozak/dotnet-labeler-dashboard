@@ -27,7 +27,7 @@
       <h2 id="trend-title">Daily activity</h2>
       <div id="trend-legend" class="legend"></div>
       <div id="trend"></div>
-      <p id="trend-note" class="caption">Tracked items per day (UTC). Each line uses its own coverage. Dashed counts are partial. Gaps are unknown, not zero.</p>
+      <p id="trend-note" class="caption">Human label changes count items changed per day (UTC), not individual edits. Each line uses its own coverage. Dashed counts are partial. Gaps are unknown, not zero.</p>
       <div class="sr-only"><table id="trend-values"></table></div>
     </section>
     <section aria-labelledby="streams-title">
@@ -54,6 +54,7 @@
     </section>
     <section class="panel" aria-labelledby="changes-title">
       <div class="section-head"><h2 id="changes-title">Label changes</h2><span id="changes-count"></span></div>
+      <label>Show <select id="change-scope"><option value="human">Human edits after confirmed labeling</option><option value="all">All label changes</option></select></label>
       <div class="table-wrap"><table><thead><tr><th>Item</th><th>Before</th><th>After</th><th>Changed by</th><th>When</th></tr></thead><tbody id="changes"></tbody></table></div>
     </section>
     <details class="panel">

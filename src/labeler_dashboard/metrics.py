@@ -208,7 +208,7 @@ def removal_followup(application, events, now, days, through):
     )
 
 
-def label_changes(item_key, events):
+def label_changes(item_key, events, human_after_application):
     rows = []
     labels = set()
     human_removed = set()
@@ -252,6 +252,7 @@ def label_changes(item_key, events):
                     "item": item_key,
                     "at": edits[-1]["at"],
                     "actor": event["actor"],
+                    "human_after_application": event["key"] in human_after_application,
                     "before": sorted(before),
                     "after": sorted(labels),
                 }
@@ -324,16 +325,24 @@ def intake_view(
     return {"status": status, "evidence_complete": complete}
 
 
-def daily_activity(events, attempts, confirmed):
-    days = defaultdict(set)
+def human_edits_after_application(events, confirmed):
+    edits = set()
     labeler_applied = False
     for event in events:
-        day = event["at"][:10]
         if event["key"] in confirmed:
             labeler_applied = True
-            if area_label(event["label"], event["repo"]):
-                days[day].add("applied")
-        if labeler_applied and event["actor_type"] == "User":
+        elif labeler_applied and event["actor_type"] == "User":
+            edits.add(event["key"])
+    return edits
+
+
+def daily_activity(events, attempts, confirmed, human_after_application):
+    days = defaultdict(set)
+    for event in events:
+        day = event["at"][:10]
+        if event["key"] in confirmed and area_label(event["label"], event["repo"]):
+            days[day].add("applied")
+        if event["key"] in human_after_application:
             days[day].add("human_changed")
     for attempt in attempts:
         if not production(attempt):
@@ -525,6 +534,7 @@ def report(state, config, now):
             if event["key"] in confirmed and area_label(event["label"], item["repo"])
         ]
         primary = applications[0] if applications else None
+        human_after_application = human_edits_after_application(item_events, confirmed)
         progress = state["streams"].get(key_stream, {})
         through = timeline_coverage_through(item, state["repositories"].get(item["repo"], {}))
         waiting_since = None
@@ -576,7 +586,9 @@ def report(state, config, now):
             "needs_area": not any(area_label(label, item["repo"]) for label in item["labels"]),
             "fallback_marker": "needs-area-label" in item["labels"],
             "timeline_unavailable": bool(item.get("timeline_availability")),
-            "activity": daily_activity(item_events, item_attempts, confirmed),
+            "activity": daily_activity(
+                item_events, item_attempts, confirmed, human_after_application
+            ),
             "waiting_since": waiting_since,
             "original_outcome": observed[0]["outcome"] if observed else "no_observed_result",
             "removal_7": removal_followup(primary, item_events, now, 7, through),
@@ -598,7 +610,7 @@ def report(state, config, now):
             if base_branches and not item.get("base_branch") and row[f"intake_{hours}"]:
                 row[f"intake_{hours}"]["evidence_complete"] = False
         result["items"].append(row)
-        result["changes"].extend(label_changes(key, item_events))
+        result["changes"].extend(label_changes(key, item_events, human_after_application))
         claimed = sum(
             observation["outcome"] in {"area_applied", "fallback_applied"}
             for observation in observed
