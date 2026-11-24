@@ -384,11 +384,13 @@ def daily_coverage(state, stream, items, runs, now, uncounted_human_edits=()):
         if not supported_terminal_evidence(attempt):
             unresolved_attempts.append((attempt, daily_execution(run)))
     coverage = []
+    prediction_gaps = set()
     while day <= now:
         end = day + timedelta(days=1)
         lower, upper = stamp(day), stamp(end)
-        run_window_complete = (start <= day and progress.get("backfill_to", "") >= upper) or (
-            progress.get("live_from", "~") <= lower and progress.get("live_to", "") >= upper
+        tracked_from = max(lower, state["cohort_start"])
+        run_window_complete = progress.get("backfill_to", "") >= upper or (
+            progress.get("live_from", "~") <= tracked_from and progress.get("live_to", "") >= upper
         )
         full_day = start <= day and end <= now
         history_complete = bool(
@@ -397,14 +399,17 @@ def daily_coverage(state, stream, items, runs, now, uncounted_human_edits=()):
             and (intake.get("updated_checkpoint") or "") >= upper
             and all((through or "") >= upper for created, through in timelines if created < upper)
         )
-        complete = bool(
-            history_complete
-            and run_window_complete
+        prediction_complete = (
+            run_window_complete
             and not any(
-                attempt_overlaps(attempt, run, lower, upper) for attempt, run in unresolved_attempts
+                attempt_overlaps(attempt, run, tracked_from, upper)
+                for attempt, run in unresolved_attempts
             )
-            and not run_gaps.overlaps(lower, upper)
+            and not run_gaps.overlaps(tracked_from, upper)
         )
+        if not prediction_complete:
+            prediction_gaps.add(lower[:10])
+        complete = history_complete and prediction_complete
         history_reason = (
             "partial_day"
             if not full_day
@@ -436,18 +441,13 @@ def daily_coverage(state, stream, items, runs, now, uncounted_human_edits=()):
         day = end
     # Human edits are fully observed, but an edit not counted yet could still follow a hidden
     # labeler application while that item's prediction evidence is incomplete.
-    gaps = {
-        row["date"]
-        for row in coverage
-        if row["partial_reason"]["applied"] not in {None, "partial_day"}
-    }
     days = {row["date"]: row for row in coverage}
     for created, at, flagged in uncounted_human_edits:
         row = days.get(at[:10])
         if (
             row
             and row["series_complete"]["human_changed"]
-            and (flagged or any(created[:10] <= gap <= at[:10] for gap in gaps))
+            and (flagged or any(created[:10] <= gap <= at[:10] for gap in prediction_gaps))
         ):
             row["complete"] = row["series_complete"]["human_changed"] = False
             row["partial_reason"]["human_changed"] = "results_missing"
@@ -615,7 +615,8 @@ def report(state, config, now):
             observation["outcome"] in {"area_applied", "fallback_applied"}
             for observation in observed
         )
-        flagged = row["unknown"] or claimed > sum(
+        # No automatic attempt is not an attribution gap when prediction history is covered.
+        flagged = (bool(production_attempts) and row["unknown"]) or claimed > sum(
             event["key"] in confirmed for event in item_events
         )
         uncounted_human[key_stream].extend(
