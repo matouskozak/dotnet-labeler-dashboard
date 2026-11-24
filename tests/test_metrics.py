@@ -149,13 +149,14 @@ def test_manual_claim_competes_for_mutation_unless_dry_run(dry_run):
     item = summarize(state)["items"][0]
     assert item["confirmed"] is dry_run
     assert item["removal_7"] is (True if dry_run else None)
-    activity = item["activity"][0]["series"]
-    assert ("applied" in activity) is dry_run
+    assert item["activity"] == (
+        [{"date": "2026-11-11", "series": ["applied", "human_changed"]}] if dry_run else []
+    )
     state["attempts"].pop("a1")
     item = summarize(state)["items"][0]
     assert not item["confirmed"]
     assert item["removal_7"] is None
-    assert item["activity"] == [{"date": "2026-11-11", "series": ["human_changed"]}]
+    assert item["activity"] == []
 
 
 def test_cleanup_failure_does_not_erase_application_or_human_followup():
