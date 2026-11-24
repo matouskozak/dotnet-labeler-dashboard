@@ -326,11 +326,14 @@ def intake_view(
 
 def daily_activity(events, attempts, confirmed):
     days = defaultdict(set)
+    labeler_applied = False
     for event in events:
         day = event["at"][:10]
-        if event["key"] in confirmed and area_label(event["label"], event["repo"]):
-            days[day].add("applied")
-        if event["actor_type"] == "User":
+        if event["key"] in confirmed:
+            labeler_applied = True
+            if area_label(event["label"], event["repo"]):
+                days[day].add("applied")
+        if labeler_applied and event["actor_type"] == "User":
             days[day].add("human_changed")
     for attempt in attempts:
         if not production(attempt):
@@ -341,7 +344,17 @@ def daily_activity(events, attempts, confirmed):
     return [{"date": day, "series": sorted(series)} for day, series in sorted(days.items())]
 
 
-def daily_coverage(state, stream, items, runs, now):
+def uncounted_human_edits(events, confirmed):
+    edits = []
+    for event in events:
+        if event["key"] in confirmed:
+            break
+        if event["actor_type"] == "User":
+            edits.append(event["at"])
+    return edits
+
+
+def daily_coverage(state, stream, items, runs, now, uncounted_human_edits=()):
     if not stream["enabled"] or not state.get("cohort_start"):
         return []
     start = instant(state["cohort_start"])
@@ -412,6 +425,23 @@ def daily_coverage(state, stream, items, runs, now):
             }
         )
         day = end
+    # Human edits are fully observed, but an edit not counted yet could still follow a hidden
+    # labeler application while that item's prediction evidence is incomplete.
+    gaps = {
+        row["date"]
+        for row in coverage
+        if row["partial_reason"]["applied"] not in {None, "partial_day"}
+    }
+    days = {row["date"]: row for row in coverage}
+    for created, at, flagged in uncounted_human_edits:
+        row = days.get(at[:10])
+        if (
+            row
+            and row["series_complete"]["human_changed"]
+            and (flagged or any(created[:10] <= gap <= at[:10] for gap in gaps))
+        ):
+            row["complete"] = row["series_complete"]["human_changed"] = False
+            row["partial_reason"]["human_changed"] = "results_missing"
     return coverage
 
 
@@ -466,6 +496,7 @@ def report(state, config, now):
     }
     intake_gaps = {key: ExecutionIntervals(runs) for key, runs in unresolved_by_stream.items()}
     streams = {stream_key(s["repo"], s["kind"]): s for s in config["streams"]}
+    uncounted_human = defaultdict(list)
     for key, item in state["items"].items():
         item_events = events[key]
         item_attempts = attempts[key]
@@ -568,6 +599,17 @@ def report(state, config, now):
                 row[f"intake_{hours}"]["evidence_complete"] = False
         result["items"].append(row)
         result["changes"].extend(label_changes(key, item_events))
+        claimed = sum(
+            observation["outcome"] in {"area_applied", "fallback_applied"}
+            for observation in observed
+        )
+        flagged = row["unknown"] or claimed > sum(
+            event["key"] in confirmed for event in item_events
+        )
+        uncounted_human[key_stream].extend(
+            (item["created_at"], at, flagged)
+            for at in uncounted_human_edits(item_events, confirmed)
+        )
     for stream in config["streams"]:
         key = stream_key(stream["repo"], stream["kind"])
         progress = state["streams"].get(key, {})
@@ -653,7 +695,9 @@ def report(state, config, now):
                     "pending": len(pending_results),
                     "failed_or_blocked": len(failed_results),
                 },
-                "daily_coverage": daily_coverage(state, stream, source_items, stream_runs, now),
+                "daily_coverage": daily_coverage(
+                    state, stream, source_items, stream_runs, now, uncounted_human[key]
+                ),
                 "run_attempts": len(stream_runs),
                 "run_evidence": dict(Counter(run["evidence"] for run in stream_runs)),
                 "failure_phases": dict(

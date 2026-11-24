@@ -80,13 +80,17 @@ unchanged. This grouping never supplies model confirmation or accuracy evidence.
 
 The daily plot counts items per UTC event day: confirmed automatic area
 applications, supported automatic no-selection/fallback results, and human label
-edits (`actor_type=User`). Each item counts once per day per line. Retries and
+edits (`actor_type=User`) made after a confirmed automatic area or
+`needs-area-label` application on the same item. Manual triage of items the
+labeler never labeled is not counted. Each item counts once per day per line. Retries and
 add/remove pairs do not inflate counts. The lines may overlap. Repository, type,
 and creation-period filters select the items, and the plot shows activity within
 that period. The 7/30-day selections use UTC calendar days, including today.
 Dashed lines and hollow points are partial observed counts. Human-change coverage
-requires complete intake and timelines for the tracked items on that UTC day,
-not predictor logs. Applied/no-selection coverage also requires discovered run
+requires complete intake and timelines for the tracked items on that UTC day.
+A human edit not yet counted is partial while that item's labeler evidence is
+unresolved or unmatched, or prediction coverage is incomplete between the item's
+creation and the edit. Applied/no-selection coverage also requires discovered run
 history and usable prediction evidence. Runs that never ran the prediction step
 (still queued, awaiting approval, failed to start, or skipped prediction) remain
 in workflow status but do not make daily prediction counts partial, because they

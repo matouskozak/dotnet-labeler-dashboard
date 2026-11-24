@@ -68,12 +68,67 @@ def test_no_selection_is_supported_automatic_evidence_not_a_skip_or_guess():
 def test_unknown_application_is_not_confirmed_and_skip_only_is_excluded():
     state = fixture()
     state["attempts"].clear()
-    assert summarize(state)["items"][0]["activity"] == [
-        {"date": "2026-11-11", "series": ["human_changed"]}
-    ]
+    assert summarize(state)["items"][0]["activity"] == []
     state = fixture()
     state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
     assert summarize(state)["items"] == []
+
+
+def test_human_edit_counts_only_after_labeler_application():
+    state = fixture()
+    state["events"]["manual"] = {
+        **state["events"]["e3"],
+        "id": 35805600000,
+        "at": "2026-11-10T12:00:00Z",
+        "label": "area-Other",
+    }
+    state["events"]["e2"]["at"] = state["events"]["e3"]["at"] = "2026-11-12T12:00:00Z"
+    assert summarize(state)["items"][0]["activity"] == [
+        {"date": "2026-11-11", "series": ["applied"]},
+        {"date": "2026-11-12", "series": ["human_changed"]},
+    ]
+
+
+def test_human_edit_after_labeler_fallback_counts():
+    state = fixture()
+    state["events"]["e1"]["label"] = state["events"]["e2"]["label"] = "needs-area-label"
+    state["attempts"]["a1"]["observations"][0].update(
+        outcome="fallback_applied", label="needs-area-label"
+    )
+    assert summarize(state)["items"][0]["activity"] == [
+        {"date": "2026-11-11", "series": ["human_changed", "no_selection"]}
+    ]
+
+
+def test_uncounted_human_edit_after_earlier_unresolved_application_is_partial():
+    state = covered_state()
+    state["attempts"]["a1"]["observations"][0]["outcome"] = "queued"
+    state["events"]["e2"]["at"] = state["events"]["e3"]["at"] = "2026-11-12T12:00:00Z"
+    days = {row["date"]: row for row in summarize(state)["streams"][0]["daily_coverage"]}
+    assert days["2026-11-12"]["partial_reason"]["human_changed"] == "results_missing"
+    assert not days["2026-11-12"]["complete"]
+    assert days["2026-11-13"]["series_complete"]["human_changed"]
+
+
+def test_uncounted_human_edit_after_earlier_prediction_gap_is_partial():
+    state = covered_state()
+    state["runs"]["gap"] = {
+        **state["runs"]["run1"],
+        "evidence": "unavailable",
+        "configs": PREDICTED,
+    }
+    state["attempts"]["a1"]["observations"][0].update(
+        outcome="no_selection",
+        label=None,
+        at="2026-11-13T12:00:00Z",
+        step_start="2026-11-13T12:00:00Z",
+        step_end="2026-11-13T12:00:05Z",
+    )
+    state["events"]["e2"]["at"] = state["events"]["e3"]["at"] = "2026-11-12T12:00:00Z"
+    result = summarize(state)
+    assert not result["items"][0]["unknown"]
+    days = {row["date"]: row for row in result["streams"][0]["daily_coverage"]}
+    assert days["2026-11-12"]["partial_reason"]["human_changed"] == "results_missing"
 
 
 def test_daily_events_use_utc_dates_not_grouped_edit_end_date():
@@ -395,7 +450,8 @@ def test_human_coverage_is_for_tracked_cohort_without_overriding_skip_exclusion(
     day = next(
         row for row in unknown["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11"
     )
-    assert day["series_complete"]["human_changed"]
+    # An uncounted human edit is uncertain while labeler evidence is missing.
+    assert day["partial_reason"]["human_changed"] == "results_missing"
     state["attempts"] = deepcopy(fixture()["attempts"])
     state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
     excluded = summarize(state)
