@@ -408,6 +408,10 @@ function applyReport(value) {
     renderRoot = next;
     data = value;
     const repos = [...new Set(value.streams.map(stream => stream.repo))];
+    if (!previous && !filters.kind &&
+      value.streams.some(s => s.repo === "dotnet/runtime" && s.kind === "issue")) {
+      Object.assign(filters, {repo: "dotnet/runtime", kind: "issue"});
+    }
     if (filters.repo && !repos.includes(filters.repo)) repos.push(filters.repo);
     $("repo").replaceChildren(new Option("All repositories", ""),
       ...repos.map(repo => new Option(repo, repo)));

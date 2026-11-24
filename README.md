@@ -10,6 +10,7 @@ Enabled streams are runtime, Roslyn, Extensions, Aspire, and Git Extensions issu
 pull requests, plus ML.NET issues.
 ML.NET pull requests are **not enabled**, not failures. Intake includes open,
 closed, and merged items. Filters select repository, item type, and creation cohort.
+The dashboard opens on runtime issues.
 
 The dashboard separates confirmed area applications, explicit no-selection results,
 application failures, and unknown evidence. It shows dashboard cohort items
