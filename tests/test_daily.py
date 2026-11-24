@@ -452,10 +452,22 @@ def test_human_coverage_is_for_tracked_cohort_without_overriding_skip_exclusion(
     day = next(
         row for row in unknown["streams"][0]["daily_coverage"] if row["date"] == "2026-11-11"
     )
-    # An uncounted human edit is uncertain while labeler evidence is missing.
-    assert day["partial_reason"]["human_changed"] == "results_missing"
+    assert day["series_complete"]["human_changed"]
+    assert not unknown["items"][0]["activity"]
+    assert unknown["changes"] and not any(c["human_after_application"] for c in unknown["changes"])
     state["attempts"] = deepcopy(fixture()["attempts"])
     state["attempts"]["a1"]["observations"][0]["outcome"] = "existing_area_skip"
     excluded = summarize(state)
     assert not excluded["items"] and not excluded["changes"]
     assert excluded["streams"][0]["items"] == 0
+
+
+def test_no_attempt_edit_is_partial_after_gap_on_first_partial_day():
+    state = covered_state()
+    state["attempts"].clear()
+    state["cohort_start"] = state["items"][KEY]["created_at"]
+    state["runs"]["run1"].update(evidence="unavailable", configs=PREDICTED)
+    state["events"]["e2"]["at"] = state["events"]["e3"]["at"] = "2026-11-12T12:00:00Z"
+    days = {row["date"]: row for row in summarize(state)["streams"][0]["daily_coverage"]}
+    assert days["2026-11-11"]["partial_reason"]["human_changed"] == "partial_day"
+    assert days["2026-11-12"]["partial_reason"]["human_changed"] == "results_missing"

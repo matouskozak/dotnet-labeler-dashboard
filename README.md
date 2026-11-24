@@ -94,7 +94,9 @@ Dashed lines and hollow points are partial observed counts. Human-change coverag
 requires complete intake and timelines for the tracked items on that UTC day.
 A human edit not yet counted is partial while that item's labeler evidence is
 unresolved or unmatched, or prediction coverage is incomplete between the item's
-creation and the edit. Applied/no-selection coverage also requires discovered run
+creation and the edit. If that history is complete and there was no automatic
+attempt on the item, its human edits remain in **All label changes** but do not
+count toward the chart or make the day partial. Applied/no-selection coverage also requires discovered run
 history and usable prediction evidence. Runs that never ran the prediction step
 (still queued, awaiting approval, failed to start, or skipped prediction) remain
 in workflow status but do not make daily prediction counts partial, because they
