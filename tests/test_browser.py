@@ -180,7 +180,9 @@ def test_daily_plot_filters_deduplicates_and_distinguishes_partial_days(site, br
     (output / "data-v2.json").write_text(json.dumps(payload))
     with browser.new_page() as page:
         page.goto(url, wait_until="networkidle")
-        page.select_option("#repo", "dotnet/runtime")
+        assert page.input_value("#repo") == "dotnet/runtime"
+        assert page.input_value("#kind") == "issue"
+        page.select_option("#kind", "")
         values = page.evaluate("dailyRows(data.items.filter(selected))")
         assert next(row for row in values if row["date"] == "2026-11-18")["counts"]["applied"] == 2
         page.select_option("#kind", "pr")
